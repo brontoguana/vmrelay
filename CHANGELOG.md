@@ -7,6 +7,7 @@
 - Added `.gitignore` so Lore metadata and `TRACKING.md` stay out of Git.
 - Implemented local host config commands, inbound/outbound mapping commands, managed SSH tunnel start/stop/status, remote Ubuntu setup, and self-update support.
 - Updated the Lore design doc with MVP tunnel ownership and config reconciliation decisions.
+- Pushed the initial implementation to the private GitHub repository and verified the README install download path.
 - Added proposed `vmrelay update` command for updating the local VMRelay script from the GitHub repository.
 - Created the private GitHub repository `brontoguana/vmrelay`.
 - Clarified that `setup HOST` should also ensure the built-in Cockpit/web UI local forward is active and print the assigned URL.
