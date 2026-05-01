@@ -1,0 +1,788 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+REPO="brontoguana/vmrelay"
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+VMRELAY_CONFIG_DIR="${VMRELAY_CONFIG_DIR:-$CONFIG_HOME/vmrelay}"
+VMRELAY_STATE_DIR="${VMRELAY_STATE_DIR:-$STATE_HOME/vmrelay}"
+HOSTS_DIR="$VMRELAY_CONFIG_DIR/hosts.d"
+
+WEB_LOCAL_HOST="${WEB_LOCAL_HOST:-127.0.0.1}"
+WEB_LOCAL_BASE_PORT="${WEB_LOCAL_BASE_PORT:-4400}"
+DEFAULT_COCKPIT_REMOTE_HOST="127.0.0.1"
+DEFAULT_COCKPIT_REMOTE_PORT="9090"
+DEFAULT_VM_BRIDGE_ADDR="192.168.122.1"
+
+die() {
+  printf 'vmrelay: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*" >&2
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  vmrelay addhost NAME SSH_TARGET
+  vmrelay removehost HOST
+  vmrelay hosts
+  vmrelay host HOST
+  vmrelay inbound HOST LOCAL_PORT REMOTE_PORT
+  vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
+  vmrelay setup HOST
+  vmrelay up HOST
+  vmrelay status HOST
+  vmrelay down HOST
+  vmrelay update [--check]
+  vmrelay --version
+
+Examples:
+  vmrelay addhost box1 user@remote-box
+  vmrelay setup box1
+  vmrelay inbound box1 8080 18080
+  vmrelay up box1
+  vmrelay status box1
+EOF
+}
+
+version() {
+  printf 'vmrelay %s\n' "$VERSION"
+}
+
+ensure_dirs() {
+  mkdir -p "$HOSTS_DIR" "$VMRELAY_STATE_DIR"
+}
+
+valid_host_name() {
+  case "${1:-}" in
+    ''|.*|*/*|*' '*)
+      return 1
+      ;;
+  esac
+  printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+$'
+}
+
+valid_port() {
+  case "${1:-}" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+shell_escape_dq() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
+}
+
+host_config_path() {
+  printf '%s/%s.conf' "$HOSTS_DIR" "$1"
+}
+
+control_path() {
+  printf '%s/%s.ctl' "$VMRELAY_STATE_DIR" "$1"
+}
+
+signature_path() {
+  printf '%s/%s.sig' "$VMRELAY_STATE_DIR" "$1"
+}
+
+config_signature() {
+  cksum "$HOST_CONFIG" | awk '{print $1 ":" $2}'
+}
+
+host_exists() {
+  [ -f "$(host_config_path "$1")" ]
+}
+
+load_host() {
+  HOST_NAME="$1"
+  valid_host_name "$HOST_NAME" || die "invalid host name: $HOST_NAME"
+  HOST_CONFIG="$(host_config_path "$HOST_NAME")"
+  [ -f "$HOST_CONFIG" ] || die "unknown host: $HOST_NAME"
+
+  SSH_TARGET=
+  WEB_PORT_OFFSET=
+  COCKPIT_REMOTE_HOST="$DEFAULT_COCKPIT_REMOTE_HOST"
+  COCKPIT_REMOTE_PORT="$DEFAULT_COCKPIT_REMOTE_PORT"
+  VM_BRIDGE_ADDR="$DEFAULT_VM_BRIDGE_ADDR"
+  INBOUND_MAPPINGS=
+  OUTBOUND_MAPPINGS=
+
+  # Host configs are VMRelay-owned shell fragments.
+  # shellcheck disable=SC1090
+  . "$HOST_CONFIG"
+
+  [ -n "${SSH_TARGET:-}" ] || die "host $HOST_NAME has no SSH_TARGET"
+  [ -n "${WEB_PORT_OFFSET:-}" ] || die "host $HOST_NAME has no WEB_PORT_OFFSET"
+  case "$WEB_PORT_OFFSET" in
+    *[!0-9]*|'')
+      die "host $HOST_NAME has invalid WEB_PORT_OFFSET: $WEB_PORT_OFFSET"
+      ;;
+  esac
+  valid_port "$COCKPIT_REMOTE_PORT" || die "host $HOST_NAME has invalid COCKPIT_REMOTE_PORT"
+}
+
+web_port() {
+  printf '%s\n' "$((WEB_LOCAL_BASE_PORT + WEB_PORT_OFFSET))"
+}
+
+web_url() {
+  printf 'http://%s:%s\n' "$WEB_LOCAL_HOST" "$(web_port)"
+}
+
+list_host_names() {
+  ensure_dirs
+  find "$HOSTS_DIR" -maxdepth 1 -type f -name '*.conf' -exec basename {} .conf \; 2>/dev/null | sort
+}
+
+next_web_offset() {
+  ensure_dirs
+  offset=0
+  while :; do
+    used=0
+    for cfg in "$HOSTS_DIR"/*.conf; do
+      [ -e "$cfg" ] || continue
+      cfg_offset=$(
+        WEB_PORT_OFFSET=
+        # shellcheck disable=SC1090
+        . "$cfg" >/dev/null 2>&1 || true
+        printf '%s' "${WEB_PORT_OFFSET:-}"
+      )
+      if [ "$cfg_offset" = "$offset" ]; then
+        used=1
+        break
+      fi
+    done
+    [ "$used" -eq 0 ] && {
+      printf '%s\n' "$offset"
+      return
+    }
+    offset=$((offset + 1))
+  done
+}
+
+write_host_config() {
+  host="$1"
+  target="$2"
+  offset="$3"
+  cockpit_host="$4"
+  cockpit_port="$5"
+  bridge_addr="$6"
+  inbound="$7"
+  outbound="$8"
+
+  ensure_dirs
+  cfg="$(host_config_path "$host")"
+  tmp="${cfg}.tmp.$$"
+
+  {
+    printf '# VMRelay host config. Edit with care, or use vmrelay commands.\n'
+    printf 'SSH_TARGET="%s"\n' "$(shell_escape_dq "$target")"
+    printf 'WEB_PORT_OFFSET=%s\n' "$offset"
+    printf 'COCKPIT_REMOTE_HOST="%s"\n' "$(shell_escape_dq "$cockpit_host")"
+    printf 'COCKPIT_REMOTE_PORT=%s\n' "$cockpit_port"
+    printf 'VM_BRIDGE_ADDR="%s"\n' "$(shell_escape_dq "$bridge_addr")"
+    printf '\n'
+    printf 'INBOUND_MAPPINGS="\n'
+    printf '%s\n' "$inbound" | sed '/^[[:space:]]*$/d'
+    printf '"\n'
+    printf '\n'
+    printf 'OUTBOUND_MAPPINGS="\n'
+    printf '%s\n' "$outbound" | sed '/^[[:space:]]*$/d'
+    printf '"\n'
+  } >"$tmp"
+
+  mv "$tmp" "$cfg"
+}
+
+ssh_base_opts() {
+  printf '%s\n' \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3
+}
+
+remote_ssh() {
+  ssh $(ssh_base_opts) "$SSH_TARGET" "$@"
+}
+
+tunnel_running() {
+  ctl="$(control_path "$HOST_NAME")"
+  [ -S "$ctl" ] || return 1
+  ssh -S "$ctl" -O check "$SSH_TARGET" >/dev/null 2>&1
+}
+
+build_tunnel_args() {
+  printf '%s\n' \
+    -L "${WEB_LOCAL_HOST}:$(web_port):${COCKPIT_REMOTE_HOST}:${COCKPIT_REMOTE_PORT}"
+
+  printf '%s\n' "$INBOUND_MAPPINGS" | while IFS= read -r line; do
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    IFS=: read -r local_host local_port remote_port extra <<EOF
+$line
+EOF
+    [ -z "${extra:-}" ] || die "invalid inbound mapping for $HOST_NAME: $line"
+    valid_port "$local_port" || die "invalid inbound local port: $line"
+    valid_port "$remote_port" || die "invalid inbound remote port: $line"
+    printf '%s\n' -R "${VM_BRIDGE_ADDR}:${remote_port}:${local_host}:${local_port}"
+  done
+
+  printf '%s\n' "$OUTBOUND_MAPPINGS" | while IFS= read -r line; do
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    IFS=: read -r local_port remote_host remote_port extra <<EOF
+$line
+EOF
+    [ -z "${extra:-}" ] || die "invalid outbound mapping for $HOST_NAME: $line"
+    valid_port "$local_port" || die "invalid outbound local port: $line"
+    valid_port "$remote_port" || die "invalid outbound remote port: $line"
+    printf '%s\n' -L "${WEB_LOCAL_HOST}:${local_port}:${remote_host}:${remote_port}"
+  done
+}
+
+start_tunnel() {
+  load_host "$1"
+  ensure_dirs
+
+  if tunnel_running; then
+    sig="$(signature_path "$HOST_NAME")"
+    current_sig="$(config_signature)"
+    if [ -f "$sig" ] && [ "$(cat "$sig")" = "$current_sig" ]; then
+      return 0
+    fi
+    ctl="$(control_path "$HOST_NAME")"
+    ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+    rm -f "$ctl" "$sig"
+  fi
+
+  ctl="$(control_path "$HOST_NAME")"
+  sig="$(signature_path "$HOST_NAME")"
+  rm -f "$ctl"
+
+  set -- $(build_tunnel_args)
+  ssh -f -N -M -S "$ctl" \
+    -o ControlPersist=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    "$@" \
+    "$SSH_TARGET"
+
+  if ! tunnel_running; then
+    die "failed to start tunnel for $HOST_NAME"
+  fi
+  config_signature >"$sig"
+}
+
+stop_tunnel() {
+  load_host "$1"
+  ctl="$(control_path "$HOST_NAME")"
+  if tunnel_running; then
+    ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+  fi
+  rm -f "$ctl" "$(signature_path "$HOST_NAME")"
+}
+
+restart_tunnel_if_running() {
+  host="$1"
+  load_host "$host"
+  if tunnel_running; then
+    stop_tunnel "$host"
+    start_tunnel "$host"
+    note "Updated running tunnel for $host."
+  fi
+}
+
+port_listening() {
+  host="$1"
+  port="$2"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "$host" "$port" >/dev/null 2>&1
+    return
+  fi
+  return 2
+}
+
+cmd_addhost() {
+  [ "$#" -eq 2 ] || die "usage: vmrelay addhost NAME SSH_TARGET"
+  name="$1"
+  target="$2"
+  valid_host_name "$name" || die "invalid host name: $name"
+  ensure_dirs
+  host_exists "$name" && die "host already exists: $name"
+
+  offset="$(next_web_offset)"
+  write_host_config "$name" "$target" "$offset" \
+    "$DEFAULT_COCKPIT_REMOTE_HOST" "$DEFAULT_COCKPIT_REMOTE_PORT" \
+    "$DEFAULT_VM_BRIDGE_ADDR" "" ""
+
+  load_host "$name"
+  printf 'Added host %s\n' "$name"
+  printf 'Config: %s\n' "$HOST_CONFIG"
+  printf 'SSH target: %s\n' "$SSH_TARGET"
+  printf 'Cockpit URL: %s\n' "$(web_url)"
+}
+
+cmd_removehost() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay removehost HOST"
+  load_host "$1"
+  if tunnel_running; then
+    die "tunnel is running for $HOST_NAME; run 'vmrelay down $HOST_NAME' first"
+  fi
+  rm -f "$HOST_CONFIG"
+  printf 'Removed host %s\n' "$HOST_NAME"
+}
+
+cmd_hosts() {
+  ensure_dirs
+  found=0
+  for name in $(list_host_names); do
+    load_host "$name"
+    found=1
+    printf '%-20s %-32s %s\n' "$HOST_NAME" "$SSH_TARGET" "$(web_url)"
+  done
+  [ "$found" -eq 1 ] || printf 'No hosts configured.\n'
+}
+
+print_mappings() {
+  label="$1"
+  mappings="$2"
+  if [ "$label" = inbound ]; then
+    printf 'Inbound mappings:\n'
+    any=0
+    printf '%s\n' "$mappings" | while IFS= read -r line; do
+      line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [ -n "$line" ] || continue
+      IFS=: read -r local_host local_port remote_port extra <<EOF
+$line
+EOF
+      [ -z "${extra:-}" ] || continue
+      any=1
+      printf '  remote VM %s:%s -> local %s:%s\n' "$VM_BRIDGE_ADDR" "$remote_port" "$local_host" "$local_port"
+    done
+    if [ "$any" = 0 ] 2>/dev/null; then :; fi
+  else
+    printf 'Outbound mappings:\n'
+    any=0
+    printf '%s\n' "$mappings" | while IFS= read -r line; do
+      line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [ -n "$line" ] || continue
+      IFS=: read -r local_port remote_host remote_port extra <<EOF
+$line
+EOF
+      [ -z "${extra:-}" ] || continue
+      any=1
+      printf '  local %s:%s -> remote %s:%s\n' "$WEB_LOCAL_HOST" "$local_port" "$remote_host" "$remote_port"
+    done
+    if [ "$any" = 0 ] 2>/dev/null; then :; fi
+  fi
+}
+
+cmd_host() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay host HOST"
+  load_host "$1"
+  printf 'Host: %s\n' "$HOST_NAME"
+  printf 'Config: %s\n' "$HOST_CONFIG"
+  printf 'SSH target: %s\n' "$SSH_TARGET"
+  printf 'SSH command: ssh %s\n' "$SSH_TARGET"
+  printf 'Cockpit URL: %s\n' "$(web_url)"
+  printf 'Cockpit tunnel: local %s:%s -> remote %s:%s\n' "$WEB_LOCAL_HOST" "$(web_port)" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT"
+  printf 'Web port offset: %s\n' "$WEB_PORT_OFFSET"
+  printf 'VM bridge: %s\n' "$VM_BRIDGE_ADDR"
+  print_mappings inbound "$INBOUND_MAPPINGS"
+  print_mappings outbound "$OUTBOUND_MAPPINGS"
+}
+
+mapping_add_inbound() {
+  local_port="$1"
+  remote_port="$2"
+  valid_port "$local_port" || die "invalid local port: $local_port"
+  valid_port "$remote_port" || die "invalid remote port: $remote_port"
+  result=
+  replaced=0
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    IFS=: read -r old_host old_local old_remote extra <<EOF
+$line
+EOF
+    [ -z "${extra:-}" ] || die "invalid inbound mapping: $line"
+    if [ "$old_remote" = "$remote_port" ]; then
+      result="${result}127.0.0.1:${local_port}:${remote_port}
+"
+      replaced=1
+    else
+      result="${result}${line}
+"
+    fi
+  done <<EOF
+$INBOUND_MAPPINGS
+EOF
+  [ "$replaced" -eq 1 ] || result="${result}127.0.0.1:${local_port}:${remote_port}
+"
+  INBOUND_MAPPINGS="$result"
+}
+
+mapping_add_outbound() {
+  local_port="$1"
+  remote_port="$2"
+  valid_port "$local_port" || die "invalid local port: $local_port"
+  valid_port "$remote_port" || die "invalid remote port: $remote_port"
+  result=
+  replaced=0
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    IFS=: read -r old_local old_host old_remote extra <<EOF
+$line
+EOF
+    [ -z "${extra:-}" ] || die "invalid outbound mapping: $line"
+    if [ "$old_local" = "$local_port" ]; then
+      result="${result}${local_port}:127.0.0.1:${remote_port}
+"
+      replaced=1
+    else
+      result="${result}${line}
+"
+    fi
+  done <<EOF
+$OUTBOUND_MAPPINGS
+EOF
+  [ "$replaced" -eq 1 ] || result="${result}${local_port}:127.0.0.1:${remote_port}
+"
+  OUTBOUND_MAPPINGS="$result"
+}
+
+cmd_inbound() {
+  [ "$#" -eq 3 ] || die "usage: vmrelay inbound HOST LOCAL_PORT REMOTE_PORT"
+  load_host "$1"
+  mapping_add_inbound "$2" "$3"
+  write_host_config "$HOST_NAME" "$SSH_TARGET" "$WEB_PORT_OFFSET" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT" "$VM_BRIDGE_ADDR" "$INBOUND_MAPPINGS" "$OUTBOUND_MAPPINGS"
+  restart_tunnel_if_running "$HOST_NAME"
+  printf 'Inbound mapping: remote VM %s:%s -> local 127.0.0.1:%s\n' "$VM_BRIDGE_ADDR" "$3" "$2"
+}
+
+cmd_outbound() {
+  [ "$#" -eq 3 ] || die "usage: vmrelay outbound HOST LOCAL_PORT REMOTE_PORT"
+  load_host "$1"
+  mapping_add_outbound "$2" "$3"
+  write_host_config "$HOST_NAME" "$SSH_TARGET" "$WEB_PORT_OFFSET" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT" "$VM_BRIDGE_ADDR" "$INBOUND_MAPPINGS" "$OUTBOUND_MAPPINGS"
+  restart_tunnel_if_running "$HOST_NAME"
+  printf 'Outbound mapping: local %s:%s -> remote 127.0.0.1:%s\n' "$WEB_LOCAL_HOST" "$2" "$3"
+}
+
+cmd_up() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay up HOST"
+  start_tunnel "$1"
+  load_host "$1"
+  printf 'Tunnel running for %s\n' "$HOST_NAME"
+  printf 'Cockpit URL: %s\n' "$(web_url)"
+}
+
+cmd_down() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay down HOST"
+  stop_tunnel "$1"
+  printf 'Tunnel stopped for %s\n' "$HOST_NAME"
+}
+
+remote_status() {
+  remote_ssh 'sh -s' <<'REMOTE' 2>/dev/null || return 1
+set -eu
+if [ -r /etc/os-release ]; then
+  . /etc/os-release
+  echo "Remote OS: ${PRETTY_NAME:-unknown}"
+else
+  echo "Remote OS: unknown"
+fi
+if command -v virsh >/dev/null 2>&1; then
+  echo "libvirt tools: installed"
+else
+  echo "libvirt tools: missing"
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active --quiet cockpit.socket 2>/dev/null; then
+    echo "cockpit.socket: active"
+  else
+    echo "cockpit.socket: inactive"
+  fi
+  if systemctl is-active --quiet libvirtd 2>/dev/null || systemctl is-active --quiet virtqemud 2>/dev/null; then
+    echo "libvirt service: active"
+  else
+    echo "libvirt service: inactive"
+  fi
+fi
+if command -v ip >/dev/null 2>&1; then
+  bridge_addr=$(ip -4 addr show virbr0 2>/dev/null | awk '/inet / {print $2; exit}' | cut -d/ -f1)
+  echo "virbr0 address: ${bridge_addr:-missing}"
+fi
+if command -v ss >/dev/null 2>&1; then
+  if ss -ltn | awk '{print $4}' | grep -Eq '(^|:)127\.0\.0\.1:9090$'; then
+    echo "Cockpit loopback listener: yes"
+  else
+    echo "Cockpit loopback listener: not detected"
+  fi
+fi
+REMOTE
+}
+
+cmd_status() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay status HOST"
+  start_tunnel "$1"
+  load_host "$1"
+
+  printf 'Host: %s\n' "$HOST_NAME"
+  printf 'Tunnel: '
+  if tunnel_running; then
+    printf 'running\n'
+  else
+    printf 'not running\n'
+  fi
+  printf 'Cockpit URL: %s\n' "$(web_url)"
+  printf 'Cockpit local port: '
+  if port_listening "$WEB_LOCAL_HOST" "$(web_port)"; then
+    printf 'listening\n'
+  else
+    printf 'not detected\n'
+  fi
+  print_mappings inbound "$INBOUND_MAPPINGS"
+  print_mappings outbound "$OUTBOUND_MAPPINGS"
+
+  printf 'Remote checks:\n'
+  if output="$(remote_status)"; then
+    printf '%s\n' "$output" | sed 's/^/  /'
+  else
+    printf '  SSH check failed for %s\n' "$SSH_TARGET"
+  fi
+}
+
+cmd_setup() {
+  [ "$#" -eq 1 ] || die "usage: vmrelay setup HOST"
+  load_host "$1"
+
+  sudo_mode=nopass
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$SSH_TARGET" 'sudo -n true' >/dev/null 2>&1; then
+    sudo_mode=password
+    printf 'Remote sudo password for %s: ' "$SSH_TARGET" >&2
+    stty_orig=$(stty -g 2>/dev/null || true)
+    stty -echo 2>/dev/null || true
+    IFS= read -r sudo_pass
+    [ -n "$stty_orig" ] && stty "$stty_orig" 2>/dev/null || true
+    printf '\n' >&2
+  fi
+
+  if [ "$sudo_mode" = password ]; then
+    {
+      printf '%s\n' "$sudo_pass"
+      setup_remote_script
+    } | ssh -T "$SSH_TARGET" 'IFS= read -r VMRELAY_SUDO_PASS; export VMRELAY_SUDO_PASS; bash -s'
+    unset sudo_pass
+  else
+    setup_remote_script | ssh -T "$SSH_TARGET" 'bash -s'
+  fi
+
+  start_tunnel "$HOST_NAME"
+  printf 'Setup complete for %s\n' "$HOST_NAME"
+  printf 'Cockpit URL: %s\n' "$(web_url)"
+}
+
+setup_remote_script() {
+  cat <<'REMOTE'
+set -euo pipefail
+
+if [ -n "${VMRELAY_SUDO_PASS:-}" ]; then
+  sudo_do() {
+    printf '%s\n' "$VMRELAY_SUDO_PASS" | sudo -S -p '' "$@"
+  }
+  sudo_do -v
+  (
+    while true; do
+      sleep 45
+      sudo_do -v || exit 1
+    done
+  ) &
+  keepalive_pid=$!
+  trap 'kill "$keepalive_pid" 2>/dev/null || true; unset VMRELAY_SUDO_PASS' EXIT
+else
+  sudo -n true
+  sudo_do() {
+    sudo -n "$@"
+  }
+fi
+
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "Remote setup currently supports Ubuntu/Debian hosts with apt-get." >&2
+  exit 1
+fi
+
+sudo_do apt-get update
+sudo_do env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  qemu-kvm \
+  libvirt-daemon-system \
+  libvirt-clients \
+  virtinst \
+  cockpit \
+  cockpit-machines \
+  openssh-server
+
+if command -v systemctl >/dev/null 2>&1; then
+  sudo_do systemctl enable --now cockpit.socket
+  sudo_do systemctl enable --now libvirtd 2>/dev/null || true
+fi
+
+if command -v virsh >/dev/null 2>&1; then
+  sudo_do virsh net-autostart default >/dev/null 2>&1 || true
+  sudo_do virsh net-start default >/dev/null 2>&1 || true
+fi
+
+remote_user=$(id -un)
+sudo_do usermod -aG libvirt,kvm "$remote_user" 2>/dev/null || true
+
+sudo_do mkdir -p /etc/systemd/system/cockpit.socket.d
+tmp_cockpit=$(mktemp)
+cat >"$tmp_cockpit" <<'EOF'
+[Socket]
+ListenStream=
+ListenStream=127.0.0.1:9090
+EOF
+sudo_do install -m 0644 "$tmp_cockpit" /etc/systemd/system/cockpit.socket.d/10-vmrelay-loopback.conf
+rm -f "$tmp_cockpit"
+
+sudo_do mkdir -p /etc/ssh/sshd_config.d
+tmp_sshd=$(mktemp)
+cat >"$tmp_sshd" <<'EOF'
+# Managed by VMRelay.
+# Allows reverse forwards to bind to the libvirt bridge address.
+AllowTcpForwarding yes
+GatewayPorts clientspecified
+EOF
+sudo_do install -m 0644 "$tmp_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
+rm -f "$tmp_sshd"
+
+if command -v systemctl >/dev/null 2>&1; then
+  sudo_do systemctl daemon-reload
+  sudo_do systemctl restart cockpit.socket
+fi
+
+if command -v sshd >/dev/null 2>&1; then
+  sudo_do sshd -t
+elif [ -x /usr/sbin/sshd ]; then
+  sudo_do /usr/sbin/sshd -t
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  sudo_do systemctl reload ssh 2>/dev/null || sudo_do systemctl reload sshd 2>/dev/null || true
+fi
+
+echo "Remote VM host setup finished."
+REMOTE
+}
+
+download_latest_script() {
+  dest="$1"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh api -H "Accept: application/vnd.github.raw" "repos/${REPO}/contents/bin/vmrelay" >"$dest"
+    return
+  fi
+
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsSL \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      -H "Accept: application/vnd.github.raw" \
+      "https://api.github.com/repos/${REPO}/contents/bin/vmrelay" >"$dest"
+    return
+  fi
+
+  die "update needs authenticated gh or GITHUB_TOKEN for private repo ${REPO}"
+}
+
+script_path() {
+  case "$0" in
+    */*)
+      dir=$(cd "$(dirname "$0")" && pwd -P)
+      printf '%s/%s\n' "$dir" "$(basename "$0")"
+      ;;
+    *)
+      command -v "$0"
+      ;;
+  esac
+}
+
+cmd_update() {
+  check_only=0
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 1 ] && [ "$1" = "--check" ] || die "usage: vmrelay update [--check]"
+    check_only=1
+  fi
+
+  current="$(script_path)"
+  [ -n "$current" ] || die "could not determine current script path"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/vmrelay-update.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  download_latest_script "$tmp"
+
+  [ -s "$tmp" ] || die "downloaded script is empty"
+  head -n 1 "$tmp" | grep -Eq '^#!.*bash' || die "downloaded script does not look like a Bash script"
+  bash -n "$tmp" || die "downloaded script failed bash -n validation"
+
+  if cmp -s "$current" "$tmp"; then
+    printf 'VMRelay is already up to date.\n'
+    return
+  fi
+
+  if [ "$check_only" -eq 1 ]; then
+    printf 'An update is available.\n'
+    return
+  fi
+
+  backup="${current}.bak.$(date +%Y%m%d%H%M%S)"
+  chmod +x "$tmp"
+  if [ -w "$current" ]; then
+    cp "$current" "$backup"
+    mv "$tmp" "$current"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo cp "$current" "$backup"
+    sudo install -m 0755 "$tmp" "$current"
+    rm -f "$tmp"
+  else
+    die "current script is not writable and sudo is unavailable: $current"
+  fi
+  trap - EXIT
+  printf 'Updated VMRelay at %s\n' "$current"
+  printf 'Backup: %s\n' "$backup"
+}
+
+main() {
+  cmd="${1:-}"
+  [ -n "$cmd" ] || {
+    usage
+    exit 0
+  }
+  shift || true
+
+  case "$cmd" in
+    addhost) cmd_addhost "$@" ;;
+    removehost) cmd_removehost "$@" ;;
+    hosts) cmd_hosts "$@" ;;
+    host) cmd_host "$@" ;;
+    inbound) cmd_inbound "$@" ;;
+    outbound) cmd_outbound "$@" ;;
+    setup) cmd_setup "$@" ;;
+    up) cmd_up "$@" ;;
+    status) cmd_status "$@" ;;
+    down) cmd_down "$@" ;;
+    update) cmd_update "$@" ;;
+    --version|-V) version ;;
+    --help|-h|help) usage ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"
