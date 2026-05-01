@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replaced GNU `find -maxdepth` usage with a portable shell glob so host listing works on macOS without GNU coreutils.
+- Bumped VMRelay to `0.1.2`.
 - Reviewed the initial CLI implementation for shell/runtime bugs.
 - Fixed tunnel argument parsing so invalid host mappings fail before SSH starts instead of being masked by subshell/command-substitution behavior.
 - Reused noninteractive SSH options for managed tunnels and remote setup, and made `setup HOST` fail clearly on SSH reachability errors before prompting for sudo.
