@@ -6,6 +6,7 @@
 - Fixed tunnel argument parsing so invalid host mappings fail before SSH starts instead of being masked by subshell/command-substitution behavior.
 - Reused noninteractive SSH options for managed tunnels and remote setup, and made `setup HOST` fail clearly on SSH reachability errors before prompting for sudo.
 - Bumped VMRelay to `0.1.1`.
+- Verified the pushed GitHub download serves `0.1.1`; the exact README installer reaches `sudo` but cannot complete in this session because passwordless sudo is unavailable.
 - Added the initial Bash implementation at `bin/vmrelay`.
 - Added `README.md` with a one-line private GitHub install command.
 - Added `.gitignore` so Lore metadata and `TRACKING.md` stay out of Git.
