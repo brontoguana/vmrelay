@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Changed `status HOST` to print a complete disconnected report when the managed tunnel cannot start, including SSH target, WebGUI URL, Cockpit tunnel, configured mappings, and remote check failure.
+- Changed empty inbound/outbound mapping sections to print `none`.
+- Bumped VMRelay to `0.1.4`.
 - Added a configured-host summary to the help output shown by bare `vmrelay`, `vmrelay --help`, and `vmrelay help`.
 - Bumped VMRelay to `0.1.3`.
 - Replaced GNU `find -maxdepth` usage with a portable shell glob so host listing works on macOS without GNU coreutils.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.3"
+VERSION="0.1.4"
 REPO="brontoguana/vmrelay"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -395,7 +395,7 @@ print_mappings() {
   if [ "$label" = inbound ]; then
     printf 'Inbound mappings:\n'
     any=0
-    printf '%s\n' "$mappings" | while IFS= read -r line; do
+    while IFS= read -r line; do
       line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
       [ -n "$line" ] || continue
       IFS=: read -r local_host local_port remote_port extra <<EOF
@@ -404,12 +404,14 @@ EOF
       [ -z "${extra:-}" ] || continue
       any=1
       printf '  remote VM %s:%s -> local %s:%s\n' "$VM_BRIDGE_ADDR" "$remote_port" "$local_host" "$local_port"
-    done
-    if [ "$any" = 0 ] 2>/dev/null; then :; fi
+    done <<EOF
+$mappings
+EOF
+    [ "$any" -eq 1 ] || printf '  none\n'
   else
     printf 'Outbound mappings:\n'
     any=0
-    printf '%s\n' "$mappings" | while IFS= read -r line; do
+    while IFS= read -r line; do
       line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
       [ -n "$line" ] || continue
       IFS=: read -r local_port remote_host remote_port extra <<EOF
@@ -418,8 +420,10 @@ EOF
       [ -z "${extra:-}" ] || continue
       any=1
       printf '  local %s:%s -> remote %s:%s\n' "$WEB_LOCAL_HOST" "$local_port" "$remote_host" "$remote_port"
-    done
-    if [ "$any" = 0 ] 2>/dev/null; then :; fi
+    done <<EOF
+$mappings
+EOF
+    [ "$any" -eq 1 ] || printf '  none\n'
   fi
 }
 
@@ -572,17 +576,26 @@ REMOTE
 
 cmd_status() {
   [ "$#" -eq 1 ] || die "usage: vmrelay status HOST"
-  start_tunnel "$1"
+  status_connect_error=
+  if ! status_connect_error="$(start_tunnel "$1" 2>&1)"; then
+    :
+  fi
   load_host "$1"
 
   printf 'Host: %s\n' "$HOST_NAME"
-  printf 'Tunnel: '
+  printf 'SSH target: %s\n' "$SSH_TARGET"
+  printf 'Tunnel connection: '
   if tunnel_running; then
-    printf 'running\n'
+    printf 'connected\n'
   else
-    printf 'not running\n'
+    printf 'not connected\n'
+    if [ -n "$status_connect_error" ]; then
+      printf 'Tunnel error:\n'
+      printf '%s\n' "$status_connect_error" | sed 's/^/  /'
+    fi
   fi
   printf 'Cockpit URL: %s\n' "$(web_url)"
+  printf 'Cockpit tunnel: local %s:%s -> remote %s:%s\n' "$WEB_LOCAL_HOST" "$(web_port)" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT"
   printf 'Cockpit local port: '
   if port_listening "$WEB_LOCAL_HOST" "$(web_port)"; then
     printf 'listening\n'
