@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a configured-host summary to the help output shown by bare `vmrelay`, `vmrelay --help`, and `vmrelay help`.
+- Bumped VMRelay to `0.1.3`.
 - Replaced GNU `find -maxdepth` usage with a portable shell glob so host listing works on macOS without GNU coreutils.
 - Bumped VMRelay to `0.1.2`.
 - Reviewed the initial CLI implementation for shell/runtime bugs.

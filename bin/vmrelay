@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.2"
+VERSION="0.1.3"
 REPO="brontoguana/vmrelay"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -48,6 +48,25 @@ Examples:
   vmrelay up box1
   vmrelay status box1
 EOF
+}
+
+host_help_line() {
+  name="$1"
+  (
+    load_host "$name"
+    printf '  %-20s %-24s %s\n' "$HOST_NAME" "$(web_url)" "$SSH_TARGET"
+  ) 2>/dev/null || printf '  %-20s %s\n' "$name" "unable to read host config"
+}
+
+usage_with_hosts() {
+  usage
+  printf '\nConfigured hosts:\n'
+  found=0
+  for name in $(list_host_names); do
+    found=1
+    host_help_line "$name"
+  done
+  [ "$found" -eq 1 ] || printf '  No hosts configured.\n'
 }
 
 version() {
@@ -784,7 +803,7 @@ cmd_update() {
 main() {
   cmd="${1:-}"
   [ -n "$cmd" ] || {
-    usage
+    usage_with_hosts
     exit 0
   }
   shift || true
@@ -802,7 +821,7 @@ main() {
     down) cmd_down "$@" ;;
     update) cmd_update "$@" ;;
     --version|-V) version ;;
-    --help|-h|help) usage ;;
+    --help|-h|help) usage_with_hosts ;;
     *) die "unknown command: $cmd" ;;
   esac
 }
