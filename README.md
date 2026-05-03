@@ -45,8 +45,10 @@ vmrelay inbound HOST LOCAL_PORT REMOTE_PORT
 vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
 vmrelay setup HOST
 vmrelay up HOST
+vmrelay resume
 vmrelay status HOST
 vmrelay down HOST
+vmrelay tail [LINES]
 vmrelay update
 ```
 
@@ -78,6 +80,14 @@ local 127.0.0.1:15432 -> remote 127.0.0.1:5432
 
 If a VMRelay-managed tunnel is already running, mapping commands update the host config and restart that host's managed tunnel so the change applies immediately.
 
+## Tunnel Maintenance
+
+```bash
+vmrelay resume
+```
+
+`vmrelay resume` starts or reconciles tunnels for every configured host. It is intended as the command that an OS-level user service can run at login or on an interval.
+
 ## Configuration
 
 Host configs live in:
@@ -93,6 +103,22 @@ Runtime state lives in:
 ```
 
 Each host config stores the SSH target, stable Cockpit web port offset, VM bridge address, and configured inbound/outbound mappings.
+
+Operational logs and the command lock live in:
+
+```text
+~/.vmrelay
+```
+
+Commands that change config or tunnel state take a per-user lock so concurrent VMRelay runs do not race each other. The default lock wait timeout is 300 seconds and can be changed with `VMRELAY_LOCK_TIMEOUT`.
+
+To show the latest VMRelay log entries:
+
+```bash
+vmrelay tail
+```
+
+`vmrelay tail` shows the latest 200 log lines by default. Pass a number to choose a different count.
 
 ## Update
 

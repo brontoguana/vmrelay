@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.4"
+VERSION="0.1.5"
 REPO="brontoguana/vmrelay"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -9,6 +9,15 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 VMRELAY_CONFIG_DIR="${VMRELAY_CONFIG_DIR:-$CONFIG_HOME/vmrelay}"
 VMRELAY_STATE_DIR="${VMRELAY_STATE_DIR:-$STATE_HOME/vmrelay}"
 HOSTS_DIR="$VMRELAY_CONFIG_DIR/hosts.d"
+VMRELAY_HOME="${VMRELAY_HOME:-$HOME/.vmrelay}"
+VMRELAY_LOG_FILE="${VMRELAY_LOG_FILE:-$VMRELAY_HOME/vmrelay.log}"
+VMRELAY_LOCK_DIR="${VMRELAY_LOCK_DIR:-$VMRELAY_HOME/lock}"
+VMRELAY_LOCK_TIMEOUT="${VMRELAY_LOCK_TIMEOUT:-300}"
+VMRELAY_LOCK_HELD=0
+VMRELAY_LOCK_TOKEN=
+VMRELAY_LOG_COMMAND=0
+VMRELAY_CURRENT_COMMAND=
+VMRELAY_CLEANUP_FILES=
 
 WEB_LOCAL_HOST="${WEB_LOCAL_HOST:-127.0.0.1}"
 WEB_LOCAL_BASE_PORT="${WEB_LOCAL_BASE_PORT:-4400}"
@@ -17,12 +26,135 @@ DEFAULT_COCKPIT_REMOTE_PORT="9090"
 DEFAULT_VM_BRIDGE_ADDR="192.168.122.1"
 
 die() {
+  log_msg "ERROR: $*"
   printf 'vmrelay: %s\n' "$*" >&2
   exit 1
 }
 
 note() {
+  log_msg "NOTE: $*"
   printf '%s\n' "$*" >&2
+}
+
+timestamp() {
+  date '+%Y-%m-%dT%H:%M:%S%z'
+}
+
+ensure_runtime_dir() {
+  mkdir -p "$VMRELAY_HOME"
+}
+
+log_msg() {
+  ensure_runtime_dir 2>/dev/null || return 0
+  ( printf '%s %s\n' "$(timestamp)" "$*" >>"$VMRELAY_LOG_FILE" ) 2>/dev/null || true
+}
+
+register_cleanup_file() {
+  VMRELAY_CLEANUP_FILES="${VMRELAY_CLEANUP_FILES}${1}
+"
+}
+
+cleanup_files() {
+  while IFS= read -r cleanup_file; do
+    [ -n "$cleanup_file" ] || continue
+    rm -f "$cleanup_file"
+  done <<EOF
+$VMRELAY_CLEANUP_FILES
+EOF
+}
+
+acquire_lock() {
+  ensure_runtime_dir
+  case "$VMRELAY_LOCK_TIMEOUT" in
+    ''|*[!0-9]*)
+      die "VMRELAY_LOCK_TIMEOUT must be seconds"
+      ;;
+  esac
+
+  started="$(date +%s)"
+  while :; do
+    now="$(date +%s)"
+    if mkdir "$VMRELAY_LOCK_DIR" 2>/dev/null; then
+      VMRELAY_LOCK_HELD=1
+      VMRELAY_LOCK_TOKEN="$$:$now"
+      printf '%s\n' "$VMRELAY_LOCK_TOKEN" >"$VMRELAY_LOCK_DIR/owner"
+      printf '%s\n' "$now" >"$VMRELAY_LOCK_DIR/created_at"
+      log_msg "lock acquired: $VMRELAY_LOCK_DIR"
+      return 0
+    fi
+
+    if [ ! -d "$VMRELAY_LOCK_DIR" ]; then
+      die "could not create VMRelay lock directory: $VMRELAY_LOCK_DIR"
+    fi
+
+    lock_owner=
+    owner_pid=
+    owner_alive=0
+    [ -r "$VMRELAY_LOCK_DIR/owner" ] && lock_owner="$(cat "$VMRELAY_LOCK_DIR/owner" 2>/dev/null || true)"
+    case "$lock_owner" in
+      *:*)
+        owner_pid="${lock_owner%%:*}"
+        case "$owner_pid" in
+          ''|*[!0-9]*)
+            owner_alive=0
+            ;;
+          *)
+            if kill -0 "$owner_pid" 2>/dev/null; then
+              owner_alive=1
+            fi
+            ;;
+        esac
+        ;;
+    esac
+
+    if [ "$owner_alive" -eq 0 ] && [ -n "$lock_owner" ]; then
+      log_msg "removing stale lock from dead owner: $VMRELAY_LOCK_DIR owner=$lock_owner"
+      rm -rf "$VMRELAY_LOCK_DIR"
+      continue
+    fi
+
+    lock_created=
+    [ -r "$VMRELAY_LOCK_DIR/created_at" ] && lock_created="$(cat "$VMRELAY_LOCK_DIR/created_at" 2>/dev/null || true)"
+    case "$lock_created" in
+      ''|*[!0-9]*)
+        lock_age="$VMRELAY_LOCK_TIMEOUT"
+        ;;
+      *)
+        lock_age="$((now - lock_created))"
+        ;;
+    esac
+
+    if [ "$owner_alive" -eq 0 ] && [ "$lock_age" -ge "$VMRELAY_LOCK_TIMEOUT" ]; then
+      log_msg "removing stale lock: $VMRELAY_LOCK_DIR age=${lock_age}s"
+      rm -rf "$VMRELAY_LOCK_DIR"
+      continue
+    fi
+
+    if [ "$((now - started))" -ge "$VMRELAY_LOCK_TIMEOUT" ]; then
+      die "timed out waiting for VMRelay lock after ${VMRELAY_LOCK_TIMEOUT}s: $VMRELAY_LOCK_DIR"
+    fi
+    sleep 1
+  done
+}
+
+release_lock() {
+  [ "$VMRELAY_LOCK_HELD" -eq 1 ] || return 0
+  if [ -r "$VMRELAY_LOCK_DIR/owner" ] && [ "$(cat "$VMRELAY_LOCK_DIR/owner" 2>/dev/null || true)" = "$VMRELAY_LOCK_TOKEN" ]; then
+    rm -rf "$VMRELAY_LOCK_DIR"
+    log_msg "lock released: $VMRELAY_LOCK_DIR"
+  fi
+  VMRELAY_LOCK_HELD=0
+}
+
+finish_command() {
+  rc=$?
+  trap - EXIT
+  cleanup_files
+  if [ "$VMRELAY_LOG_COMMAND" -eq 1 ]; then
+    log_msg "command end: $VMRELAY_CURRENT_COMMAND rc=$rc"
+  fi
+  release_lock
+  exit "$rc"
 }
 
 usage() {
@@ -36,8 +168,10 @@ Usage:
   vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
   vmrelay setup HOST
   vmrelay up HOST
+  vmrelay resume
   vmrelay status HOST
   vmrelay down HOST
+  vmrelay tail [LINES]
   vmrelay update [--check]
   vmrelay --version
 
@@ -74,7 +208,7 @@ version() {
 }
 
 ensure_dirs() {
-  mkdir -p "$HOSTS_DIR" "$VMRELAY_STATE_DIR"
+  mkdir -p "$HOSTS_DIR" "$VMRELAY_STATE_DIR" "$VMRELAY_HOME"
 }
 
 valid_host_name() {
@@ -283,8 +417,10 @@ start_tunnel() {
     sig="$(signature_path "$HOST_NAME")"
     current_sig="$(config_signature)"
     if [ -f "$sig" ] && [ "$(cat "$sig")" = "$current_sig" ]; then
+      log_msg "tunnel already running: $HOST_NAME"
       return 0
     fi
+    log_msg "restarting tunnel for config change: $HOST_NAME"
     ctl="$(control_path "$HOST_NAME")"
     ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
     rm -f "$ctl" "$sig"
@@ -306,6 +442,7 @@ start_tunnel() {
   done <"$args_file"
   rm -f "$args_file"
 
+  log_msg "starting tunnel: $HOST_NAME target=$SSH_TARGET web_port=$(web_port)"
   ssh -f -N -M -S "$ctl" \
     $(ssh_base_opts) \
     -o ControlPersist=yes \
@@ -317,15 +454,18 @@ start_tunnel() {
     die "failed to start tunnel for $HOST_NAME"
   fi
   config_signature >"$sig"
+  log_msg "tunnel started: $HOST_NAME"
 }
 
 stop_tunnel() {
   load_host "$1"
   ctl="$(control_path "$HOST_NAME")"
   if tunnel_running; then
+    log_msg "stopping tunnel: $HOST_NAME"
     ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
   fi
   rm -f "$ctl" "$(signature_path "$HOST_NAME")"
+  log_msg "tunnel stopped: $HOST_NAME"
 }
 
 restart_tunnel_if_running() {
@@ -362,6 +502,7 @@ cmd_addhost() {
     "$DEFAULT_VM_BRIDGE_ADDR" "" ""
 
   load_host "$name"
+  log_msg "host added: $HOST_NAME target=$SSH_TARGET web_port=$(web_port)"
   printf 'Added host %s\n' "$name"
   printf 'Config: %s\n' "$HOST_CONFIG"
   printf 'SSH target: %s\n' "$SSH_TARGET"
@@ -375,6 +516,7 @@ cmd_removehost() {
     die "tunnel is running for $HOST_NAME; run 'vmrelay down $HOST_NAME' first"
   fi
   rm -f "$HOST_CONFIG"
+  log_msg "host removed: $HOST_NAME"
   printf 'Removed host %s\n' "$HOST_NAME"
 }
 
@@ -508,6 +650,7 @@ cmd_inbound() {
   mapping_add_inbound "$2" "$3"
   write_host_config "$HOST_NAME" "$SSH_TARGET" "$WEB_PORT_OFFSET" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT" "$VM_BRIDGE_ADDR" "$INBOUND_MAPPINGS" "$OUTBOUND_MAPPINGS"
   restart_tunnel_if_running "$HOST_NAME"
+  log_msg "inbound mapping set: $HOST_NAME local=127.0.0.1:$2 remote=${VM_BRIDGE_ADDR}:$3"
   printf 'Inbound mapping: remote VM %s:%s -> local 127.0.0.1:%s\n' "$VM_BRIDGE_ADDR" "$3" "$2"
 }
 
@@ -517,6 +660,7 @@ cmd_outbound() {
   mapping_add_outbound "$2" "$3"
   write_host_config "$HOST_NAME" "$SSH_TARGET" "$WEB_PORT_OFFSET" "$COCKPIT_REMOTE_HOST" "$COCKPIT_REMOTE_PORT" "$VM_BRIDGE_ADDR" "$INBOUND_MAPPINGS" "$OUTBOUND_MAPPINGS"
   restart_tunnel_if_running "$HOST_NAME"
+  log_msg "outbound mapping set: $HOST_NAME local=${WEB_LOCAL_HOST}:$2 remote=127.0.0.1:$3"
   printf 'Outbound mapping: local %s:%s -> remote 127.0.0.1:%s\n' "$WEB_LOCAL_HOST" "$2" "$3"
 }
 
@@ -528,10 +672,47 @@ cmd_up() {
   printf 'Cockpit URL: %s\n' "$(web_url)"
 }
 
+cmd_resume() {
+  [ "$#" -eq 0 ] || die "usage: vmrelay resume"
+  ensure_dirs
+  found=0
+  failed=0
+  for name in $(list_host_names); do
+    found=1
+    if output="$(start_tunnel "$name" 2>&1)"; then
+      load_host "$name"
+      printf 'Tunnel running for %s\n' "$HOST_NAME"
+      printf 'Cockpit URL: %s\n' "$(web_url)"
+    else
+      failed=1
+      printf 'Failed to resume %s\n' "$name" >&2
+      [ -n "$output" ] && printf '%s\n' "$output" | sed 's/^/  /' >&2
+    fi
+  done
+  [ "$found" -eq 1 ] || printf 'No hosts configured.\n'
+  [ "$failed" -eq 0 ] || return 1
+}
+
 cmd_down() {
   [ "$#" -eq 1 ] || die "usage: vmrelay down HOST"
   stop_tunnel "$1"
   printf 'Tunnel stopped for %s\n' "$HOST_NAME"
+}
+
+cmd_tail() {
+  lines="${1:-200}"
+  [ "$#" -le 1 ] || die "usage: vmrelay tail [LINES]"
+  case "$lines" in
+    ''|*[!0-9]*)
+      die "tail line count must be a positive integer"
+      ;;
+  esac
+  [ "$lines" -ge 1 ] || die "tail line count must be at least 1"
+  if [ ! -f "$VMRELAY_LOG_FILE" ]; then
+    printf 'No VMRelay log found at %s\n' "$VMRELAY_LOG_FILE"
+    return
+  fi
+  tail -n "$lines" "$VMRELAY_LOG_FILE"
 }
 
 remote_status() {
@@ -779,7 +960,7 @@ cmd_update() {
   current="$(script_path)"
   [ -n "$current" ] || die "could not determine current script path"
   tmp="$(mktemp "${TMPDIR:-/tmp}/vmrelay-update.XXXXXX")"
-  trap 'rm -f "$tmp"' EXIT
+  register_cleanup_file "$tmp"
   download_latest_script "$tmp"
 
   [ -s "$tmp" ] || die "downloaded script is empty"
@@ -808,9 +989,21 @@ cmd_update() {
   else
     die "current script is not writable and sudo is unavailable: $current"
   fi
-  trap - EXIT
+  VMRELAY_CLEANUP_FILES=
+  log_msg "updated script: current=$current backup=$backup"
   printf 'Updated VMRelay at %s\n' "$current"
   printf 'Backup: %s\n' "$backup"
+}
+
+command_needs_lock() {
+  case "$1" in
+    addhost|removehost|inbound|outbound|setup|up|resume|status|down|update)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 main() {
@@ -822,6 +1015,29 @@ main() {
   shift || true
 
   case "$cmd" in
+    tail)
+      cmd_tail "$@"
+      exit 0
+      ;;
+    --version|-V)
+      version
+      exit 0
+      ;;
+    --help|-h|help)
+      usage_with_hosts
+      exit 0
+      ;;
+  esac
+
+  if command_needs_lock "$cmd"; then
+    acquire_lock
+  fi
+  VMRELAY_LOG_COMMAND=1
+  VMRELAY_CURRENT_COMMAND="$cmd"
+  log_msg "command start: vmrelay $cmd $*"
+  trap finish_command EXIT
+
+  case "$cmd" in
     addhost) cmd_addhost "$@" ;;
     removehost) cmd_removehost "$@" ;;
     hosts) cmd_hosts "$@" ;;
@@ -830,11 +1046,10 @@ main() {
     outbound) cmd_outbound "$@" ;;
     setup) cmd_setup "$@" ;;
     up) cmd_up "$@" ;;
+    resume) cmd_resume "$@" ;;
     status) cmd_status "$@" ;;
     down) cmd_down "$@" ;;
     update) cmd_update "$@" ;;
-    --version|-V) version ;;
-    --help|-h|help) usage_with_hosts ;;
     *) die "unknown command: $cmd" ;;
   esac
 }

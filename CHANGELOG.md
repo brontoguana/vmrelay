@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added a portable per-user command lock under `~/.vmrelay/lock` for config and tunnel operations, with a default 300-second wait timeout and dead-owner stale lock cleanup.
+- Added operational logging to `~/.vmrelay/vmrelay.log`.
+- Added `vmrelay tail [LINES]`, defaulting to the latest 200 log lines.
+- Added `vmrelay resume` to start or reconcile tunnels for all configured hosts.
+- Bumped VMRelay to `0.1.5`.
 - Changed `status HOST` to print a complete disconnected report when the managed tunnel cannot start, including SSH target, WebGUI URL, Cockpit tunnel, configured mappings, and remote check failure.
 - Changed empty inbound/outbound mapping sections to print `none`.
 - Bumped VMRelay to `0.1.4`.
