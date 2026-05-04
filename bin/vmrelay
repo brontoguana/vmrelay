@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.5"
+VERSION="0.1.6"
 REPO="brontoguana/vmrelay"
+RAW_SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/main/bin/vmrelay"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -922,20 +923,8 @@ REMOTE
 
 download_latest_script() {
   dest="$1"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh api -H "Accept: application/vnd.github.raw" "repos/${REPO}/contents/bin/vmrelay" >"$dest"
-    return
-  fi
-
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl -fsSL \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-      -H "Accept: application/vnd.github.raw" \
-      "https://api.github.com/repos/${REPO}/contents/bin/vmrelay" >"$dest"
-    return
-  fi
-
-  die "update needs authenticated gh or GITHUB_TOKEN for private repo ${REPO}"
+  command -v curl >/dev/null 2>&1 || die "update needs curl to download ${RAW_SCRIPT_URL}"
+  curl -fsSL "$RAW_SCRIPT_URL" >"$dest"
 }
 
 script_path() {

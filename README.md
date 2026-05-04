@@ -4,10 +4,10 @@ VMRelay is a local Bash/OpenSSH command for managing remote Ubuntu VM hosts from
 
 ## Install
 
-This repository is private, so the one-line installer expects the GitHub CLI to be installed and authenticated with access to `brontoguana/vmrelay`.
+Install the latest public VMRelay script:
 
 ```bash
-gh api -H "Accept: application/vnd.github.raw" repos/brontoguana/vmrelay/contents/bin/vmrelay | sudo tee /usr/local/bin/vmrelay >/dev/null && sudo chmod +x /usr/local/bin/vmrelay && vmrelay --version
+curl -fsSL https://raw.githubusercontent.com/brontoguana/vmrelay/main/bin/vmrelay | sudo tee /usr/local/bin/vmrelay >/dev/null && sudo chmod +x /usr/local/bin/vmrelay && vmrelay --version
 ```
 
 ## Quick Start
@@ -126,4 +126,4 @@ vmrelay tail
 vmrelay update
 ```
 
-`vmrelay update` downloads the latest `bin/vmrelay` script from this private GitHub repo using authenticated `gh` when available. It validates the downloaded Bash script, keeps a backup of the previous installed script, and does not change host configs, tunnels, or remote machines.
+`vmrelay update` downloads the latest `bin/vmrelay` script from the public GitHub raw URL using `curl`. It validates the downloaded Bash script, keeps a backup of the previous installed script, and does not change host configs, tunnels, or remote machines.

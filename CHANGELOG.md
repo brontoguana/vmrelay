@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Changed the GitHub repository visibility from private to public.
+- Changed the README installer to use the public raw GitHub URL with `curl`, so install no longer requires authenticated `gh`.
+- Changed `vmrelay update` to download from the public raw GitHub URL with `curl` instead of requiring authenticated GitHub API access.
+- Bumped VMRelay to `0.1.6`.
 - Added a portable per-user command lock under `~/.vmrelay/lock` for config and tunnel operations, with a default 300-second wait timeout and dead-owner stale lock cleanup.
 - Added operational logging to `~/.vmrelay/vmrelay.log`.
 - Added `vmrelay tail [LINES]`, defaulting to the latest 200 log lines.
