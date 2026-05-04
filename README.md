@@ -7,7 +7,7 @@ VMRelay is a local Bash/OpenSSH command for managing remote Ubuntu VM hosts from
 Install the latest public VMRelay script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/brontoguana/vmrelay/main/bin/vmrelay | sudo tee /usr/local/bin/vmrelay >/dev/null && sudo chmod +x /usr/local/bin/vmrelay && vmrelay --version
+curl -fsSL https://github.com/brontoguana/vmrelay/raw/refs/heads/main/bin/vmrelay | sudo tee /usr/local/bin/vmrelay >/dev/null && sudo chmod +x /usr/local/bin/vmrelay && vmrelay --version
 ```
 
 ## Quick Start

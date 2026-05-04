@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.6"
+VERSION="0.1.7"
 REPO="brontoguana/vmrelay"
-RAW_SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/main/bin/vmrelay"
+RAW_SCRIPT_URL="https://github.com/${REPO}/raw/refs/heads/main/bin/vmrelay"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
