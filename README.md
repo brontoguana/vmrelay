@@ -1,6 +1,8 @@
 # VMRelay
 
-VMRelay is a local Bash/OpenSSH command for managing remote Ubuntu VM hosts from Linux or macOS. It sets up KVM/libvirt/Cockpit on a remote host, keeps Cockpit private on the remote loopback interface, and creates local SSH forwards for the web UI and configured TCP mappings.
+VMRelay makes it easy to use a remote Linux box as a VM server without fully converting that machine into a dedicated virtualization appliance like Proxmox. It keeps the remote box as a normal Linux host, then uses Bash, OpenSSH, KVM/libvirt, and Cockpit to provide a private web UI and tunnelled access from your local Linux or macOS machine.
+
+VMRelay sets up KVM/libvirt/Cockpit on a remote Ubuntu host, keeps Cockpit private on the remote loopback interface, and creates local SSH forwards for the web UI and configured TCP mappings.
 
 ## Install
 

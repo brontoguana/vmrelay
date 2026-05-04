@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a clearer README description explaining that VMRelay uses a normal remote Linux box as a VM server without fully converting it into a Proxmox-style appliance.
 - Changed the GitHub repository visibility from private to public.
 - Changed the README installer to use the public GitHub contents API with `curl`, so install no longer requires authenticated `gh`.
 - Changed `vmrelay update` to download from the public GitHub contents API with `curl` instead of requiring authenticated GitHub API access.
