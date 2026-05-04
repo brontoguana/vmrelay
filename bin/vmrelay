@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.7"
+VERSION="0.1.8"
 REPO="brontoguana/vmrelay"
-RAW_SCRIPT_URL="https://github.com/${REPO}/raw/refs/heads/main/bin/vmrelay"
+RAW_SCRIPT_URL="https://api.github.com/repos/${REPO}/contents/bin/vmrelay?ref=main"
+RAW_SCRIPT_ACCEPT="Accept: application/vnd.github.raw"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -924,7 +925,7 @@ REMOTE
 download_latest_script() {
   dest="$1"
   command -v curl >/dev/null 2>&1 || die "update needs curl to download ${RAW_SCRIPT_URL}"
-  curl -fsSL "$RAW_SCRIPT_URL" >"$dest"
+  curl -fsSL -H "$RAW_SCRIPT_ACCEPT" "$RAW_SCRIPT_URL" >"$dest"
 }
 
 script_path() {
