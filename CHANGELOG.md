@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-05-05
+
+- Built the first Go/Bubble Tea VMRelay TUI MVP as `vmrelay 0.2.0`, with host management, SSH host checks/setup, system-libvirt VM inventory, lifecycle actions, VM ownership/share state, and loopback noVNC console launch.
+- Added a release installer (`install.sh`) and release build script for Linux/macOS amd64/arm64 binaries.
+- Updated the README so the one-line install uses the Go binary release installer and the documented workflow starts with `vmrelay` opening the TUI.
+- Changed the VMRelay TUI ownership design so VMs created/imported through VMRelay are owned by the creating remote host account by default, with explicit shared/granted/admin visibility rules.
+- Clarified VMRelay TUI security assumptions: SSH remains the trust boundary, noVNC/websockify and local console URLs stay loopback-bound, port mappings travel over SSH, and stronger VM segregation requires host permissions to match VMRelay ownership policy.
+- Added a VMRelay ownership model to the TUI design: VMs remain system-wide libvirt resources, but VMRelay records shared per-host VM ownership/operator policy while port mappings stay local to each user/workstation.
+- Clarified the TUI design so remote VM management uses system-wide libvirt (`qemu:///system`) by default, while port mappings, console tunnels, local ports, and conflict-resolution choices are stored per local VMRelay user/workstation.
+- Added a Lore design document for a future Go/Bubble Tea VMRelay TUI where `vmrelay` opens a host manager by default, Cockpit Machines is removed from the design, and host setup, VM management, browser consoles, and port mappings live in the TUI rather than a duplicated CLI workflow.
 - Changed `vmrelay console` to best-effort open the generated noVNC URL in the local default browser on macOS, Linux, WSL, and Windows shell environments; set `VMRELAY_OPEN_BROWSER=0` to suppress auto-open.
 - Bumped VMRelay to `0.1.11`.
 - Fixed `vmrelay console` for Ubuntu's packaged `websockify`, which does not support the `--pid` option; VMRelay now backgrounds websockify with `nohup`, writes its own pid file, and reports the startup log if websockify exits immediately.

@@ -1,4 +1,6 @@
 /.lore/
 /TRACKING.md
+/dist/
+/vmrelay
 *.tmp
 *.bak

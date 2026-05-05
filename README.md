@@ -1,166 +1,90 @@
 # VMRelay
 
-VMRelay makes it easy to use a remote Linux box as a VM server without fully converting that machine into a dedicated virtualization appliance like Proxmox. It keeps the remote box as a normal Linux host, then uses Bash, OpenSSH, KVM/libvirt, and Cockpit to provide a private web UI and tunnelled access from your local Linux or macOS machine.
+VMRelay is a terminal UI for managing VMs on a normal remote Linux host without turning that host into a dedicated virtualization appliance. It uses SSH, KVM/libvirt, noVNC, and websockify underneath, but the day-to-day workflow starts from one app:
 
-VMRelay sets up KVM/libvirt/Cockpit on a remote Ubuntu host, keeps Cockpit private on the remote loopback interface, creates local SSH forwards for the web UI and configured TCP mappings, and can expose VM graphical consoles through a local browser using noVNC.
+```bash
+vmrelay
+```
+
+VMs run system-wide under `qemu:///system` on the remote host. VMRelay stores local host preferences on the client machine, stores VM ownership metadata on the VM host, and exposes VM graphical consoles through browser-based noVNC tunnels bound to loopback and forwarded over SSH.
 
 ## Install
 
-Install the latest public VMRelay script:
+Install the latest VMRelay release:
 
 ```bash
-curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/brontoguana/vmrelay/contents/bin/vmrelay?ref=main" | sudo tee /usr/local/bin/vmrelay >/dev/null && sudo chmod +x /usr/local/bin/vmrelay && vmrelay --version
+curl -fsSL https://raw.githubusercontent.com/brontoguana/vmrelay/main/install.sh | bash
 ```
 
 ## Quick Start
 
 ```bash
-vmrelay addhost box1 user@remote-box
-vmrelay setup box1
-vmrelay status box1
+vmrelay
 ```
 
-For the first host, Cockpit is forwarded to:
+Inside the TUI:
 
-```text
-http://127.0.0.1:4400
-```
+1. Press `a` to add a host such as `iron` with an SSH target such as `aem@iron`.
+2. Press `t` to test SSH, libvirt, KVM, noVNC, and websockify.
+3. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
+4. Press `Enter` to open the VM list for the selected host.
+5. Select a VM and press `o` to open its browser console.
 
-Additional hosts get stable ports from the same base:
+## Capabilities
 
-```text
-box1 -> http://127.0.0.1:4400
-box2 -> http://127.0.0.1:4401
-box3 -> http://127.0.0.1:4402
-```
+- Host manager opens by default; there is no separate day-to-day CLI workflow.
+- Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
+- Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, noVNC, and websockify on apt-based hosts.
+- VM inventory shows state plus VMRelay ownership status.
+- VM actions currently include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
+- VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`.
+- VMRelay imports legacy host definitions from `~/.config/vmrelay/hosts.d` when present.
 
-Remote Cockpit is configured to listen only on `127.0.0.1:9090` on the remote host. VMRelay automatically forwards it locally during `setup`, `up`, and `status`.
+## Ownership
 
-## Commands
+VMRelay manages ownership from the start of the TUI model.
 
-```bash
-vmrelay addhost NAME SSH_TARGET
-vmrelay removehost HOST
-vmrelay hosts
-vmrelay host HOST
-vmrelay inbound HOST LOCAL_PORT REMOTE_PORT
-vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
-vmrelay console HOST VM_NAME [LOCAL_PORT]
-vmrelay console-down HOST VM_NAME
-vmrelay setup HOST
-vmrelay up HOST
-vmrelay resume
-vmrelay status HOST
-vmrelay down HOST
-vmrelay tail [LINES]
-vmrelay update
-```
+- VMs are system-wide libvirt resources on the remote host.
+- VMRelay ownership metadata lives on the remote host at `/var/lib/vmrelay/ownership.tsv`.
+- VMs can be adopted by the current remote SSH account.
+- Private VMs are intended for owner/admin visibility.
+- Shared VMs are visible to all VMRelay users for that host.
+- Local console and port choices remain local to each workstation/user.
 
-## Port Mappings
+The current TUI includes the host-side ownership state and share/private flags. VM creation/import and full role grants are planned next.
 
-Inbound mappings expose a local service to remote VMs through the remote libvirt bridge:
+## Security Model
 
-```bash
-vmrelay inbound box1 8080 18080
-```
+VMRelay does not expose libvirt, noVNC, or websockify directly on the network. Management transport is SSH. Browser console services listen on loopback and are reached through SSH local forwards.
 
-Result:
-
-```text
-remote VM 192.168.122.1:18080 -> local 127.0.0.1:8080
-```
-
-Outbound mappings expose a remote host service locally:
-
-```bash
-vmrelay outbound box1 15432 5432
-```
-
-Result:
-
-```text
-local 127.0.0.1:15432 -> remote 127.0.0.1:5432
-```
-
-If a VMRelay-managed tunnel is already running, mapping commands update the host config and restart that host's managed tunnel so the change applies immediately.
-
-## VM Consoles
-
-VMRelay can expose a libvirt VM's graphical console in a local browser without requiring RDP, SSH, or any agent inside the guest:
-
-```bash
-vmrelay console box1 Draytek_VPN_virtualisation_server 4500
-```
-
-Result:
-
-```text
-Console URL: http://127.0.0.1:4500/vnc.html?autoconnect=1&resize=scale
-Browser: requested local console URL
-```
-
-This uses the VM's libvirt VNC display on the remote host, starts noVNC/websockify on remote `127.0.0.1`, and forwards that browser console to the local machine over SSH. It works for Linux and Windows guests because the connection is to the virtual display, not to services inside the guest OS.
-
-VMRelay opens the console URL automatically with the local OS default browser on macOS, Linux, WSL, and Windows shell environments when a suitable browser launcher is available. To suppress this for scripts or manual use:
-
-```bash
-VMRELAY_OPEN_BROWSER=0 vmrelay console box1 Draytek_VPN_virtualisation_server 4500
-```
-
-If `LOCAL_PORT` is omitted, VMRelay chooses a stable local port from the host and VM name.
-
-If a VM was created with SPICE graphics, VMRelay can switch it to VNC automatically when the VM is shut down. For a running SPICE-only VM, shut the VM down and rerun the console command.
-
-To stop the console tunnel and remote noVNC proxy:
-
-```bash
-vmrelay console-down box1 Draytek_VPN_virtualisation_server
-```
-
-## Tunnel Maintenance
-
-```bash
-vmrelay resume
-```
-
-`vmrelay resume` starts or reconciles tunnels for every configured host. It is intended as the command that an OS-level user service can run at login or on an interval.
+VMRelay ownership is product-level access control. If a remote account has unrestricted root, sudo, or libvirt access outside VMRelay, host Unix permissions and sudoers/libvirt policy must also match the intended segregation.
 
 ## Configuration
 
-Host configs live in:
+Local config:
 
 ```text
-~/.config/vmrelay/hosts.d
+~/.config/vmrelay/config.json
 ```
 
-Runtime state lives in:
+Local runtime state:
 
 ```text
 ~/.local/state/vmrelay
 ```
 
-Each host config stores the SSH target, stable Cockpit web port offset, VM bridge address, and configured inbound/outbound mappings.
-
-Operational logs and the command lock live in:
+Remote VMRelay policy state:
 
 ```text
-~/.vmrelay
+/var/lib/vmrelay/ownership.tsv
 ```
 
-Commands that change config or tunnel state take a per-user lock so concurrent VMRelay runs do not race each other. The default lock wait timeout is 300 seconds and can be changed with `VMRELAY_LOCK_TIMEOUT`.
-
-To show the latest VMRelay log entries:
+Set this to suppress automatic browser launch:
 
 ```bash
-vmrelay tail
+VMRELAY_OPEN_BROWSER=0 vmrelay
 ```
 
-`vmrelay tail` shows the latest 200 log lines by default. Pass a number to choose a different count.
+## Legacy Script
 
-## Update
-
-```bash
-vmrelay update
-```
-
-`vmrelay update` downloads the latest `bin/vmrelay` script from the public GitHub contents API using `curl`. It validates the downloaded Bash script, keeps a backup of the previous installed script, and does not change host configs, tunnels, or remote machines.
+The older Bash implementation remains in `bin/vmrelay` as a migration reference for now. The release installer installs the Go TUI binary.
