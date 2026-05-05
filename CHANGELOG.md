@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.11 - 2026-05-05
+
+- Made VM creation discoverable from the host VMs tab: `n` now opens the create-VM form from either VMs or Config, the VMs footer advertises the shortcut, and the empty VM list shows a create hint.
+- Added a focused test for opening the create-VM form from the host VMs tab.
+
 ## 0.2.10 - 2026-05-05
 
 - Changed generated noVNC console URLs to enable noVNC's local pointer dot and lower-latency browser settings by default, so mouse control has immediate local visual feedback even if the guest cursor repaint is slow.

@@ -682,20 +682,8 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "n":
-		if m.hostTab == hostTabConfig {
-			m.mode = modeCreateVM
-			m.createVMName = ""
-			m.createVMMemory = "4"
-			m.createVMCPUs = "2"
-			m.createVMDiskSize = "64"
-			m.createVMDiskBus = "sata"
-			m.createVMISO = ""
-			m.createVMNetwork = "default"
-			m.createVMFirmware = "uefi"
-			m.createVMShared = "n"
-			m.createVMField = 0
-			m.status = "Create a new VM from a remote ISO."
-			m.errText = ""
+		if m.hostTab == hostTabVMs || m.hostTab == hostTabConfig {
+			m = m.beginCreateVM()
 		} else if m.hostTab == hostTabMappings {
 			m.mode = modeAddMapping
 			m.addMapName = ""
@@ -822,6 +810,23 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) beginCreateVM() Model {
+	m.mode = modeCreateVM
+	m.createVMName = ""
+	m.createVMMemory = "4"
+	m.createVMCPUs = "2"
+	m.createVMDiskSize = "64"
+	m.createVMDiskBus = "sata"
+	m.createVMISO = ""
+	m.createVMNetwork = "default"
+	m.createVMFirmware = "uefi"
+	m.createVMShared = "n"
+	m.createVMField = 0
+	m.status = "Create a new VM from a remote ISO."
+	m.errText = ""
+	return m
 }
 
 func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1725,7 +1730,7 @@ func (m Model) viewVMs(width, height int) string {
 	bodyW := max(50, width)
 	nameW := max(24, bodyW-44)
 	if len(m.vms) == 0 {
-		b.WriteString("No VMs found under qemu:///system.")
+		b.WriteString("No VMs found under qemu:///system.\n\nPress n to create a VM from a remote ISO.")
 		return b.String()
 	}
 	b.WriteString("  " + cell("VM", nameW) + " " + cell("State", 12) + " " + cell("Owner", 14) + " " + cell("Visibility", 10) + "\n")
@@ -2012,7 +2017,7 @@ func (m Model) helpText() string {
 			case hostTabMappings:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  q: quit"
 			default:
-				return "?: help  m: themes  b: hosts  enter: VM detail  left/right: tabs  r: refresh  p/f: power  o/x: console"
+				return "?: help  m: themes  b: hosts  enter: detail  n: create VM  r: refresh  p/f: power  o/x: console"
 			}
 		case modeVMDetail:
 			switch m.vmTab {

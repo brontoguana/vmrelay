@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -292,6 +293,26 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	m.createVMFirmware = "coreboot"
 	if _, err := m.pendingVMCreate(); err == nil {
 		t.Fatal("expected unsupported firmware to fail")
+	}
+}
+
+func TestVMTabCanOpenCreateVM(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMs,
+		hostTab:    hostTabVMs,
+		activeHost: Host{Name: "iron"},
+	}
+	updated, cmd := m.updateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("expected no command when opening create form")
+	}
+	next := updated.(Model)
+	if next.mode != modeCreateVM || next.createVMFirmware != "uefi" || next.createVMDiskBus != "sata" {
+		t.Fatalf("n on VM tab did not open create form with defaults: %#v", next)
+	}
+	if !strings.Contains(stripANSI(m.helpText()), "n: create VM") {
+		t.Fatalf("VM tab help text should advertise creation: %q", m.helpText())
 	}
 }
 
