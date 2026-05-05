@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.6 - 2026-05-05
+
+- Added a VM detail screen opened from the host VM list with Summary, Disks, NICs, and Actions tabs.
+- Added VM detail inventory for UUID, state, owner/shared status, CPU count, memory, autostart, graphics display, attached disks, and network interfaces.
+- Added disk creation from the VM detail Disks tab using `qemu-img create` plus persistent libvirt disk attachment.
+- Added disk import from remote host paths with `qemu-img info` format detection, automatic conversion of non-qcow2 sources to qcow2, persistent attachment, and safe detach without deleting image files.
+- Added NIC attach/detach actions for libvirt network interfaces from the VM detail NICs tab.
+- Added tests for VM detail parsing, disk/NIC tab rendering, and disk import validation.
+
 ## 0.2.5 - 2026-05-05
 
 - Removed the in-pane Hosts theme button so theme selection is only exposed through the bottom controls row.

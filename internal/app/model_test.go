@@ -187,6 +187,54 @@ func TestHostDetailRendersMappings(t *testing.T) {
 	}
 }
 
+func TestParseVMDetailOutput(t *testing.T) {
+	out := strings.Join([]string{
+		"VMRELAY_DETAIL\tvm1\tuuid-1\trunning\talice\t1\tenable\t4\t8388608 KiB\tvnc://127.0.0.1:2",
+		"VMRELAY_DISK\tfile\tdisk\tvda\t/var/lib/libvirt/images/vm1.qcow2",
+		"VMRELAY_NIC\tvnet0\tnetwork\tdefault\tvirtio\t52:54:00:12:34:56",
+	}, "\n")
+	detail := parseVMDetailOutput(out)
+	if detail.VM.Name != "vm1" || detail.VM.UUID != "uuid-1" || !detail.VM.Shared {
+		t.Fatalf("unexpected detail VM: %#v", detail.VM)
+	}
+	if detail.Autostart != "enable" || detail.CPUs != "4" || detail.Graphics == "" {
+		t.Fatalf("missing detail fields: %#v", detail)
+	}
+	if len(detail.Disks) != 1 || detail.Disks[0].Target != "vda" || detail.Disks[0].Source != "/var/lib/libvirt/images/vm1.qcow2" {
+		t.Fatalf("unexpected disks: %#v", detail.Disks)
+	}
+	if len(detail.NICs) != 1 || detail.NICs[0].MAC != "52:54:00:12:34:56" || detail.NICs[0].Source != "default" {
+		t.Fatalf("unexpected NICs: %#v", detail.NICs)
+	}
+}
+
+func TestVMDetailRendersDiskAndNICTabs(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmDetail: VMDetail{
+			VM: VM{Name: "vm1", State: "running", Owner: "alice"},
+			Disks: []VMDisk{
+				{Type: "file", Device: "disk", Target: "vda", Source: "/var/lib/libvirt/images/vm1.qcow2"},
+			},
+			NICs: []VMNIC{
+				{Interface: "vnet0", Type: "network", Source: "default", Model: "virtio", MAC: "52:54:00:12:34:56"},
+			},
+		},
+	}
+	m.vmTab = vmTabDisks
+	disks := stripANSI(m.viewVMDetail(100, 20))
+	if !strings.Contains(disks, "Disks") || !strings.Contains(disks, "vda") || !strings.Contains(disks, "vm1.qcow2") {
+		t.Fatalf("disk tab did not render disk detail:\n%s", disks)
+	}
+	m.vmTab = vmTabNICs
+	nics := stripANSI(m.viewVMDetail(100, 20))
+	if !strings.Contains(nics, "NICs") || !strings.Contains(nics, "52:54:00:12:34:56") || !strings.Contains(nics, "default") {
+		t.Fatalf("NIC tab did not render NIC detail:\n%s", nics)
+	}
+}
+
 func TestPendingMappingValidation(t *testing.T) {
 	m := Model{
 		activeHost:       Host{Name: "iron"},
@@ -201,6 +249,26 @@ func TestPendingMappingValidation(t *testing.T) {
 	}
 	if mapping.Host != "iron" || mapping.LocalPort != 8080 || mapping.RemotePort != 8081 {
 		t.Fatalf("unexpected mapping: %#v", mapping)
+	}
+}
+
+func TestPendingDiskImportValidation(t *testing.T) {
+	m := Model{
+		importDiskSource: "/home/alice/source.vmdk",
+		importDiskDest:   "/var/lib/libvirt/images/imported.qcow2",
+		importDiskTarget: "vdb",
+	}
+	req, err := m.pendingDiskImport()
+	if err != nil {
+		t.Fatalf("pendingDiskImport returned error: %v", err)
+	}
+	if req.Source != "/home/alice/source.vmdk" || req.Dest != "/var/lib/libvirt/images/imported.qcow2" || req.Target != "vdb" {
+		t.Fatalf("unexpected import request: %#v", req)
+	}
+
+	m.importDiskSource = "relative.vmdk"
+	if _, err := m.pendingDiskImport(); err == nil {
+		t.Fatal("expected relative source path to fail")
 	}
 }
 

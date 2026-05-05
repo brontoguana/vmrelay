@@ -32,8 +32,11 @@ Inside the TUI:
 4. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
 5. Press `Enter` to open the selected host detail screen.
 6. Use `left`/`right` to switch between VMs, Config, and Mappings.
-7. Select a VM and press `o` to open its browser console.
-8. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
+7. Select a VM and press `Enter` to open its VM detail screen.
+8. In VM detail, use Summary, Disks, NICs, and Actions tabs.
+9. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, or `x` to detach the selected disk.
+10. In NICs, press `n` to attach a libvirt network NIC or `x` to detach the selected NIC.
+11. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
 
 ## Capabilities
 
@@ -44,7 +47,10 @@ Inside the TUI:
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, noVNC, and websockify on apt-based hosts.
 - Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
 - VM inventory shows state plus VMRelay ownership status.
-- VM actions currently include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
+- VM detail screens show summary, disks, NICs, and actions for the selected VM.
+- VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
+- Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, and detach disks without deleting their image files.
+- NIC management can attach a virtio interface to a libvirt network such as `default` and detach selected interfaces by MAC address.
 - Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.
 - VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`.
 - VMRelay imports legacy host definitions from `~/.config/vmrelay/hosts.d` when present.

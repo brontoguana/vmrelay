@@ -39,6 +39,31 @@ type VM struct {
 	Shared bool
 }
 
+type VMDetail struct {
+	VM        VM
+	Autostart string
+	CPUs      string
+	Memory    string
+	Graphics  string
+	Disks     []VMDisk
+	NICs      []VMNIC
+}
+
+type VMDisk struct {
+	Type   string
+	Device string
+	Target string
+	Source string
+}
+
+type VMNIC struct {
+	Interface string
+	Type      string
+	Source    string
+	Model     string
+	MAC       string
+}
+
 type Config struct {
 	Version  int           `json:"version"`
 	Hosts    []Host        `json:"hosts"`
@@ -61,7 +86,11 @@ const (
 	modeHosts mode = iota
 	modeAddHost
 	modeVMs
+	modeVMDetail
 	modeAddMapping
+	modeAddDisk
+	modeImportDisk
+	modeAddNIC
 	modeTheme
 	modeUpdate
 	modeBusy
@@ -72,6 +101,14 @@ const (
 	hostTabConfig
 	hostTabMappings
 	hostTabCount
+)
+
+const (
+	vmTabSummary = iota
+	vmTabDisks
+	vmTabNICs
+	vmTabActions
+	vmTabCount
 )
 
 type Model struct {
@@ -92,9 +129,13 @@ type Model struct {
 	hostCursor  int
 	vmCursor    int
 	hostTab     int
+	vmTab       int
 	mapCursor   int
+	diskCursor  int
+	nicCursor   int
 	themeCursor int
 	vms         []VM
+	vmDetail    VMDetail
 	activeHost  Host
 	updateInfo  updateInfo
 
@@ -107,12 +148,27 @@ type Model struct {
 	addMapRemoteHost string
 	addMapRemotePort string
 	addMapField      int
+
+	addDiskPath   string
+	addDiskSize   string
+	addDiskTarget string
+	addDiskField  int
+
+	importDiskSource string
+	importDiskDest   string
+	importDiskTarget string
+	importDiskField  int
+
+	addNICSource string
+	addNICModel  string
+	addNICField  int
 }
 
 type resultMsg struct {
 	op     string
 	output string
 	vms    []VM
+	detail VMDetail
 	err    error
 }
 
@@ -249,8 +305,16 @@ func (m Model) View() string {
 		b.WriteString(m.viewAddHost(innerW, contentH))
 	case modeVMs:
 		b.WriteString(m.viewHostDetail(innerW, contentH))
+	case modeVMDetail:
+		b.WriteString(m.viewVMDetail(innerW, contentH))
 	case modeAddMapping:
 		b.WriteString(m.viewAddMapping(innerW, contentH))
+	case modeAddDisk:
+		b.WriteString(m.viewAddDisk(innerW, contentH))
+	case modeImportDisk:
+		b.WriteString(m.viewImportDisk(innerW, contentH))
+	case modeAddNIC:
+		b.WriteString(m.viewAddNIC(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeUpdate:
@@ -280,7 +344,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -294,8 +358,16 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddHostKey(msg)
 	case modeVMs:
 		return m.updateVMKey(msg)
+	case modeVMDetail:
+		return m.updateVMDetailKey(msg)
 	case modeAddMapping:
 		return m.updateAddMappingKey(msg)
+	case modeAddDisk:
+		return m.updateAddDiskKey(msg)
+	case modeImportDisk:
+		return m.updateImportDiskKey(msg)
+	case modeAddNIC:
+		return m.updateAddNICKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
 	case modeUpdate:
@@ -511,6 +583,15 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.hostTab == hostTabVMs && m.vmCursor < len(m.vms)-1 {
 			m.vmCursor++
 		}
+	case "enter":
+		if m.hostTab == hostTabVMs {
+			if vm, ok := m.selectedVM(); ok {
+				m.vmTab = vmTabSummary
+				m.diskCursor = 0
+				m.nicCursor = 0
+				return m.loadVMDetail(m.activeHost, vm)
+			}
+		}
 	case "n":
 		if m.hostTab == hostTabMappings {
 			m.mode = modeAddMapping
@@ -640,6 +721,278 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "b", "esc":
+		m.mode = modeVMs
+		m.status = "Back to " + m.activeHost.Name + "."
+		m.errText = ""
+	case "left", "[":
+		if m.vmTab > 0 {
+			m.vmTab--
+		}
+	case "right", "]":
+		if m.vmTab < vmTabCount-1 {
+			m.vmTab++
+		}
+	case "up", "k":
+		switch m.vmTab {
+		case vmTabDisks:
+			if m.diskCursor > 0 {
+				m.diskCursor--
+			}
+		case vmTabNICs:
+			if m.nicCursor > 0 {
+				m.nicCursor--
+			}
+		}
+	case "down", "j":
+		switch m.vmTab {
+		case vmTabDisks:
+			if m.diskCursor < len(m.vmDetail.Disks)-1 {
+				m.diskCursor++
+			}
+		case vmTabNICs:
+			if m.nicCursor < len(m.vmDetail.NICs)-1 {
+				m.nicCursor++
+			}
+		}
+	case "r":
+		return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+	case "p":
+		vm := m.vmDetail.VM
+		action := "start"
+		if strings.Contains(strings.ToLower(vm.State), "running") {
+			action = "shutdown"
+		}
+		return m.busy(modeVMDetail, action+" "+vm.Name+"...", action, func() resultMsg {
+			out, err := lifecycle(m.activeHost, vm.Name, action)
+			return resultMsg{op: action, output: out, err: err}
+		})
+	case "f":
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Force off "+vm.Name+"...", "destroy", func() resultMsg {
+			out, err := lifecycle(m.activeHost, vm.Name, "destroy")
+			return resultMsg{op: "destroy", output: out, err: err}
+		})
+	case "o":
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Opening console for "+vm.Name+"...", "console", func() resultMsg {
+			out, err := openConsole(m.activeHost, vm.Name, m.stateDir)
+			return resultMsg{op: "console", output: out, err: err}
+		})
+	case "c":
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Stopping console for "+vm.Name+"...", "console-down", func() resultMsg {
+			out, err := closeConsole(m.activeHost, vm.Name, m.stateDir)
+			return resultMsg{op: "console-down", output: out, err: err}
+		})
+	case "a":
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Adopting "+vm.Name+"...", "adopt", func() resultMsg {
+			out, err := setOwnership(m.activeHost, vm, false, false)
+			return resultMsg{op: "adopt", output: out, err: err}
+		})
+	case "h":
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Toggling shared flag for "+vm.Name+"...", "share", func() resultMsg {
+			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
+			return resultMsg{op: "share", output: out, err: err}
+		})
+	case "n":
+		switch m.vmTab {
+		case vmTabDisks:
+			m.mode = modeAddDisk
+			m.addDiskPath = ""
+			m.addDiskSize = "20"
+			m.addDiskTarget = ""
+			m.addDiskField = 0
+			m.status = "Create and attach a qcow2 disk."
+			m.errText = ""
+		case vmTabNICs:
+			m.mode = modeAddNIC
+			m.addNICSource = "default"
+			m.addNICModel = "virtio"
+			m.addNICField = 0
+			m.status = "Attach a network interface."
+			m.errText = ""
+		}
+	case "i":
+		if m.vmTab == vmTabDisks {
+			m.mode = modeImportDisk
+			m.importDiskSource = ""
+			m.importDiskDest = ""
+			m.importDiskTarget = ""
+			m.importDiskField = 0
+			m.status = "Import, convert if needed, and attach a disk."
+			m.errText = ""
+		}
+	case "x":
+		switch m.vmTab {
+		case vmTabDisks:
+			disk, ok := m.selectedDisk()
+			if !ok || disk.Target == "" {
+				return m, nil
+			}
+			vm := m.vmDetail.VM
+			return m.busy(modeVMDetail, "Detaching disk "+disk.Target+" from "+vm.Name+"...", "disk-detach", func() resultMsg {
+				out, err := detachDisk(m.activeHost, vm.Name, disk)
+				return resultMsg{op: "disk-detach", output: out, err: err}
+			})
+		case vmTabNICs:
+			nic, ok := m.selectedNIC()
+			if !ok || nic.MAC == "" {
+				return m, nil
+			}
+			vm := m.vmDetail.VM
+			return m.busy(modeVMDetail, "Detaching NIC "+nic.MAC+" from "+vm.Name+"...", "nic-detach", func() resultMsg {
+				out, err := detachNIC(m.activeHost, vm.Name, nic)
+				return resultMsg{op: "nic-detach", output: out, err: err}
+			})
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateAddDiskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled disk creation."
+		m.errText = ""
+	case "tab":
+		m.addDiskField = (m.addDiskField + 1) % 3
+	case "shift+tab":
+		m.addDiskField = (m.addDiskField + 2) % 3
+	case "enter":
+		if m.addDiskField < 2 {
+			m.addDiskField++
+			return m, nil
+		}
+		req, err := m.pendingDiskCreate()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Creating disk for "+vm.Name+"...", "disk-create", func() resultMsg {
+			out, err := createAndAttachDisk(m.activeHost, vm.Name, req)
+			return resultMsg{op: "disk-create", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		switch m.addDiskField {
+		case 0:
+			m.addDiskSize = trimLastRune(m.addDiskSize)
+		case 1:
+			m.addDiskPath = trimLastRune(m.addDiskPath)
+		case 2:
+			m.addDiskTarget = trimLastRune(m.addDiskTarget)
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			switch m.addDiskField {
+			case 0:
+				m.addDiskSize += msg.String()
+			case 1:
+				m.addDiskPath += msg.String()
+			case 2:
+				m.addDiskTarget += msg.String()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateImportDiskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled disk import."
+		m.errText = ""
+	case "tab":
+		m.importDiskField = (m.importDiskField + 1) % 3
+	case "shift+tab":
+		m.importDiskField = (m.importDiskField + 2) % 3
+	case "enter":
+		if m.importDiskField < 2 {
+			m.importDiskField++
+			return m, nil
+		}
+		req, err := m.pendingDiskImport()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Importing disk for "+vm.Name+"...", "disk-import", func() resultMsg {
+			out, err := importAndAttachDisk(m.activeHost, vm.Name, req)
+			return resultMsg{op: "disk-import", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		switch m.importDiskField {
+		case 0:
+			m.importDiskSource = trimLastRune(m.importDiskSource)
+		case 1:
+			m.importDiskDest = trimLastRune(m.importDiskDest)
+		case 2:
+			m.importDiskTarget = trimLastRune(m.importDiskTarget)
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			switch m.importDiskField {
+			case 0:
+				m.importDiskSource += msg.String()
+			case 1:
+				m.importDiskDest += msg.String()
+			case 2:
+				m.importDiskTarget += msg.String()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateAddNICKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled NIC attach."
+		m.errText = ""
+	case "tab", "shift+tab":
+		m.addNICField = 1 - m.addNICField
+	case "enter":
+		if m.addNICField == 0 {
+			m.addNICField = 1
+			return m, nil
+		}
+		req, err := m.pendingNICAdd()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Attaching NIC to "+vm.Name+"...", "nic-add", func() resultMsg {
+			out, err := attachNIC(m.activeHost, vm.Name, req)
+			return resultMsg{op: "nic-add", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		if m.addNICField == 0 {
+			m.addNICSource = trimLastRune(m.addNICSource)
+		} else {
+			m.addNICModel = trimLastRune(m.addNICModel)
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			if m.addNICField == 0 {
+				m.addNICSource += msg.String()
+			} else {
+				m.addNICModel += msg.String()
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "b":
@@ -734,12 +1087,30 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
 		m.status = fmt.Sprintf("Loaded %d VMs from %s.", len(m.vms), m.activeHost.Name)
+	case "vm-detail":
+		m.vmDetail = msg.detail
+		if m.diskCursor >= len(m.vmDetail.Disks) {
+			m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
+		}
+		if m.nicCursor >= len(m.vmDetail.NICs) {
+			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
+		}
+		m.status = "Loaded " + m.vmDetail.VM.Name + "."
 	case "start", "shutdown", "destroy", "adopt", "share":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
 			m.status = msg.op + " complete."
 		}
+		if m.priorMode == modeVMDetail {
+			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+		}
 		return m.loadVMs(m.activeHost)
+	case "disk-create", "disk-import", "disk-detach", "nic-add", "nic-detach":
+		m.status = strings.TrimSpace(msg.output)
+		if m.status == "" {
+			m.status = msg.op + " complete."
+		}
+		return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
 	case "mapping-start", "mapping-stop":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -761,6 +1132,8 @@ func failureText(msg resultMsg, m Model) string {
 			return "Failed to open " + m.activeHost.Name + ": " + msg.err.Error()
 		}
 		return "Failed to open host: " + msg.err.Error()
+	case "vm-detail":
+		return "Failed to load VM detail: " + msg.err.Error()
 	case "check":
 		return "Host check failed: " + msg.err.Error()
 	case "setup":
@@ -773,6 +1146,16 @@ func failureText(msg resultMsg, m Model) string {
 		return "Mapping start failed: " + msg.err.Error()
 	case "mapping-stop":
 		return "Mapping stop failed: " + msg.err.Error()
+	case "disk-create":
+		return "Disk creation failed: " + msg.err.Error()
+	case "disk-import":
+		return "Disk import failed: " + msg.err.Error()
+	case "disk-detach":
+		return "Disk detach failed: " + msg.err.Error()
+	case "nic-add":
+		return "NIC attach failed: " + msg.err.Error()
+	case "nic-detach":
+		return "NIC detach failed: " + msg.err.Error()
 	default:
 		return msg.op + " failed: " + msg.err.Error()
 	}
@@ -795,6 +1178,19 @@ func (m Model) loadVMs(h Host) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		vms, out, err := listVMs(h)
 		return resultMsg{op: "vms", output: out, vms: vms, err: err}
+	}
+}
+
+func (m Model) loadVMDetail(h Host, vm VM) (tea.Model, tea.Cmd) {
+	m.activeHost = h
+	m.vmDetail.VM = vm
+	m.priorMode = modeVMDetail
+	m.mode = modeBusy
+	m.status = "Loading " + vm.Name + "..."
+	m.errText = ""
+	return m, func() tea.Msg {
+		detail, out, err := getVMDetail(h, vm)
+		return resultMsg{op: "vm-detail", output: out, detail: detail, err: err}
 	}
 }
 
@@ -832,6 +1228,20 @@ func (m Model) selectedMapping() (PortMapping, bool) {
 		return PortMapping{}, false
 	}
 	return mappings[m.mapCursor], true
+}
+
+func (m Model) selectedDisk() (VMDisk, bool) {
+	if len(m.vmDetail.Disks) == 0 || m.diskCursor < 0 || m.diskCursor >= len(m.vmDetail.Disks) {
+		return VMDisk{}, false
+	}
+	return m.vmDetail.Disks[m.diskCursor], true
+}
+
+func (m Model) selectedNIC() (VMNIC, bool) {
+	if len(m.vmDetail.NICs) == 0 || m.nicCursor < 0 || m.nicCursor >= len(m.vmDetail.NICs) {
+		return VMNIC{}, false
+	}
+	return m.vmDetail.NICs[m.nicCursor], true
 }
 
 func (m *Model) removeMapping(id string) {
@@ -876,6 +1286,106 @@ func (m Model) pendingMapping() (PortMapping, error) {
 	}
 	id := hash(fmt.Sprintf("%s-%s-%d-%s-%d-%d", m.activeHost.Name, name, localPort, remoteHost, remotePort, time.Now().UnixNano()))
 	return PortMapping{ID: id, Host: m.activeHost.Name, Name: name, LocalPort: localPort, RemoteHost: remoteHost, RemotePort: remotePort}, nil
+}
+
+type diskCreateRequest struct {
+	SizeGiB int
+	Path    string
+	Target  string
+}
+
+type diskImportRequest struct {
+	Source string
+	Dest   string
+	Target string
+}
+
+type nicAddRequest struct {
+	Source string
+	Model  string
+}
+
+func (m Model) pendingDiskCreate() (diskCreateRequest, error) {
+	size, err := strconv.Atoi(strings.TrimSpace(m.addDiskSize))
+	if err != nil || size < 1 || size > 65536 {
+		return diskCreateRequest{}, fmt.Errorf("disk size must be 1-65536 GiB")
+	}
+	path := strings.TrimSpace(m.addDiskPath)
+	if err := validateOptionalAbsPath(path, "disk path"); err != nil {
+		return diskCreateRequest{}, err
+	}
+	target := strings.TrimSpace(m.addDiskTarget)
+	if err := validateTarget(target); err != nil {
+		return diskCreateRequest{}, err
+	}
+	return diskCreateRequest{SizeGiB: size, Path: path, Target: target}, nil
+}
+
+func (m Model) pendingDiskImport() (diskImportRequest, error) {
+	source := strings.TrimSpace(m.importDiskSource)
+	if err := validateRequiredAbsPath(source, "source disk path"); err != nil {
+		return diskImportRequest{}, err
+	}
+	dest := strings.TrimSpace(m.importDiskDest)
+	if err := validateOptionalAbsPath(dest, "destination path"); err != nil {
+		return diskImportRequest{}, err
+	}
+	target := strings.TrimSpace(m.importDiskTarget)
+	if err := validateTarget(target); err != nil {
+		return diskImportRequest{}, err
+	}
+	return diskImportRequest{Source: source, Dest: dest, Target: target}, nil
+}
+
+func (m Model) pendingNICAdd() (nicAddRequest, error) {
+	source := strings.TrimSpace(m.addNICSource)
+	if source == "" || strings.ContainsAny(source, "\r\n\t ") {
+		return nicAddRequest{}, fmt.Errorf("network source is required and must not contain spaces")
+	}
+	model := strings.TrimSpace(m.addNICModel)
+	if model == "" {
+		model = "virtio"
+	}
+	if strings.ContainsAny(model, "\r\n\t ") {
+		return nicAddRequest{}, fmt.Errorf("NIC model must not contain spaces")
+	}
+	return nicAddRequest{Source: source, Model: model}, nil
+}
+
+func validateRequiredAbsPath(path, label string) error {
+	if path == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	return validateOptionalAbsPath(path, label)
+}
+
+func validateOptionalAbsPath(path, label string) error {
+	if path == "" {
+		return nil
+	}
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%s must be an absolute remote path", label)
+	}
+	if strings.ContainsAny(path, "\r\n\t") {
+		return fmt.Errorf("%s must not contain control whitespace", label)
+	}
+	return nil
+}
+
+func validateTarget(target string) error {
+	if target == "" {
+		return nil
+	}
+	if len(target) < 3 || !strings.HasPrefix(target, "vd") {
+		return fmt.Errorf("target should look like vdb, vdc, etc")
+	}
+	for _, r := range target {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return fmt.Errorf("target should use lowercase letters and numbers")
+	}
+	return nil
 }
 
 func parsePort(text string) (int, error) {
@@ -961,6 +1471,26 @@ func (m Model) viewHostDetail(width, height int) string {
 	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
+func (m Model) viewVMDetail(width, height int) string {
+	var b strings.Builder
+	s := m.styles()
+	vm := m.vmDetail.VM
+	b.WriteString(fmt.Sprintf("VM: %s  %s\n\n", vm.Name, s.faint.Render(m.activeHost.Name+" / "+vm.State)))
+	b.WriteString(m.vmTabLine(width-4) + "\n\n")
+	bodyH := height - 5
+	switch m.vmTab {
+	case vmTabDisks:
+		b.WriteString(m.viewVMDisks(width-4, bodyH))
+	case vmTabNICs:
+		b.WriteString(m.viewVMNICs(width-4, bodyH))
+	case vmTabActions:
+		b.WriteString(m.viewVMActions(width-4, bodyH))
+	default:
+		b.WriteString(m.viewVMSummary(width-4, bodyH))
+	}
+	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
 func (m Model) tabLine(width int) string {
 	tabs := []string{"VMs", "Config", "Mappings"}
 	parts := make([]string, 0, len(tabs))
@@ -968,6 +1498,20 @@ func (m Model) tabLine(width int) string {
 	for i, tab := range tabs {
 		label := " " + tab + " "
 		if i == m.hostTab {
+			label = s.selected.Render(label)
+		}
+		parts = append(parts, label)
+	}
+	return clipText(strings.Join(parts, " "), width)
+}
+
+func (m Model) vmTabLine(width int) string {
+	tabs := []string{"Summary", "Disks", "NICs", "Actions"}
+	parts := make([]string, 0, len(tabs))
+	s := m.styles()
+	for i, tab := range tabs {
+		label := " " + tab + " "
+		if i == m.vmTab {
 			label = s.selected.Render(label)
 		}
 		parts = append(parts, label)
@@ -1002,6 +1546,105 @@ func (m Model) viewVMs(width, height int) string {
 		b.WriteString(row + "\n")
 	}
 	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) viewVMSummary(width, height int) string {
+	vm := m.vmDetail.VM
+	shared := "private"
+	if vm.Shared {
+		shared = "shared"
+	}
+	lines := []string{
+		"Identity",
+		"  Name:       " + vm.Name,
+		"  UUID:       " + valueOr(vm.UUID, "unknown"),
+		"  State:      " + valueOr(vm.State, "unknown"),
+		"  Owner:      " + ownerLabel(vm.Owner),
+		"  Visibility: " + shared,
+		"",
+		"Runtime",
+		"  CPUs:       " + valueOr(m.vmDetail.CPUs, "unknown"),
+		"  Memory:     " + valueOr(m.vmDetail.Memory, "unknown"),
+		"  Autostart:  " + valueOr(m.vmDetail.Autostart, "unknown"),
+		"  Graphics:   " + valueOr(m.vmDetail.Graphics, "none"),
+		"",
+		"Inventory",
+		fmt.Sprintf("  Disks:      %d", len(m.vmDetail.Disks)),
+		fmt.Sprintf("  NICs:       %d", len(m.vmDetail.NICs)),
+	}
+	return fitLines(strings.Join(lines, "\n"), width, height)
+}
+
+func (m Model) viewVMDisks(width, height int) string {
+	if len(m.vmDetail.Disks) == 0 {
+		return fitLines("No disks reported by libvirt.\n\nPress n to create a qcow2 disk or i to import an existing disk.", width, height)
+	}
+	var b strings.Builder
+	s := m.styles()
+	targetW := 8
+	deviceW := 8
+	sourceW := max(20, width-targetW-deviceW-8)
+	b.WriteString("  " + cell("Target", targetW) + " " + cell("Device", deviceW) + " " + cell("Source", sourceW) + "\n")
+	b.WriteString("  " + strings.Repeat("-", targetW) + " " + strings.Repeat("-", deviceW) + " " + strings.Repeat("-", sourceW) + "\n")
+	for i, disk := range m.vmDetail.Disks {
+		cursor := " "
+		if i == m.diskCursor {
+			cursor = ">"
+		}
+		row := cursor + " " + cell(disk.Target, targetW) + " " + cell(valueOr(disk.Device, disk.Type), deviceW) + " " + cell(disk.Source, sourceW)
+		if i == m.diskCursor {
+			row = s.selected.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
+	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) viewVMNICs(width, height int) string {
+	if len(m.vmDetail.NICs) == 0 {
+		return fitLines("No NICs reported by libvirt.\n\nPress n to attach a NIC to a libvirt network.", width, height)
+	}
+	var b strings.Builder
+	s := m.styles()
+	sourceW := max(10, min(20, width-46))
+	b.WriteString("  " + cell("MAC", 18) + " " + cell("Type", 8) + " " + cell("Source", sourceW) + " " + cell("Model", 10) + "\n")
+	b.WriteString("  " + strings.Repeat("-", 18) + " " + strings.Repeat("-", 8) + " " + strings.Repeat("-", sourceW) + " " + strings.Repeat("-", 10) + "\n")
+	for i, nic := range m.vmDetail.NICs {
+		cursor := " "
+		if i == m.nicCursor {
+			cursor = ">"
+		}
+		row := cursor + " " + cell(nic.MAC, 18) + " " + cell(nic.Type, 8) + " " + cell(nic.Source, sourceW) + " " + cell(nic.Model, 10)
+		if i == m.nicCursor {
+			row = s.selected.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
+	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) viewVMActions(width, height int) string {
+	action := "start"
+	if strings.Contains(strings.ToLower(m.vmDetail.VM.State), "running") {
+		action = "shutdown"
+	}
+	lines := []string{
+		"Power",
+		"  p: " + action,
+		"  f: force off",
+		"",
+		"Console",
+		"  o: open browser console",
+		"  c: stop console tunnel",
+		"",
+		"Ownership",
+		"  a: adopt unmanaged VM",
+		"  h: toggle shared/private",
+		"",
+		"Refresh",
+		"  r: reload detail",
+	}
+	return fitLines(strings.Join(lines, "\n"), width, height)
 }
 
 func (m Model) viewHostConfig(width, height int) string {
@@ -1053,6 +1696,43 @@ func (m Model) viewMappings(width, height int) string {
 		b.WriteString(row + "\n")
 	}
 	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) viewAddDisk(width, height int) string {
+	cursors := []string{" ", " ", " "}
+	cursors[m.addDiskField] = ">"
+	body := fmt.Sprintf("Create Disk for %s\n\n%s Size GiB:    %s\n%s Image path:   %s\n%s Target dev:   %s\n\nLeave image path blank to create /var/lib/libvirt/images/<vm>-<target>.qcow2.\nLeave target blank to use the next available virtio disk target.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+		m.vmDetail.VM.Name,
+		cursors[0], m.addDiskSize,
+		cursors[1], m.addDiskPath,
+		cursors[2], m.addDiskTarget)
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
+func (m Model) viewImportDisk(width, height int) string {
+	cursors := []string{" ", " ", " "}
+	cursors[m.importDiskField] = ">"
+	body := fmt.Sprintf("Import Disk for %s\n\n%s Source path:  %s\n%s Dest qcow2:   %s\n%s Target dev:   %s\n\nSource is a remote host path. VMRelay detects the format with qemu-img; non-qcow2 sources are converted to qcow2 before attach.\nLeave destination blank to import under /var/lib/libvirt/images.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+		m.vmDetail.VM.Name,
+		cursors[0], m.importDiskSource,
+		cursors[1], m.importDiskDest,
+		cursors[2], m.importDiskTarget)
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
+func (m Model) viewAddNIC(width, height int) string {
+	sourceCursor := " "
+	modelCursor := " "
+	if m.addNICField == 0 {
+		sourceCursor = ">"
+	} else {
+		modelCursor = ">"
+	}
+	body := fmt.Sprintf("Attach NIC to %s\n\n%s Network: %s\n%s Model:   %s\n\nNetwork is a libvirt network name, usually default. Model defaults to virtio.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+		m.vmDetail.VM.Name,
+		sourceCursor, m.addNICSource,
+		modelCursor, m.addNICModel)
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
 func (m Model) viewThemes(width, height int) string {
@@ -1114,11 +1794,28 @@ func (m Model) helpText() string {
 			case hostTabMappings:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  q: quit"
 			default:
-				return "?: help  m: themes  b: hosts  left/right: tabs  r: refresh  p/f: power  o/x: console  a/h: ownership"
+				return "?: help  m: themes  b: hosts  enter: VM detail  left/right: tabs  r: refresh  p/f: power  o/x: console"
+			}
+		case modeVMDetail:
+			switch m.vmTab {
+			case vmTabDisks:
+				return "?: help  m: themes  b/esc: host  left/right: tabs  n: create disk  i: import disk  x: detach  r: refresh"
+			case vmTabNICs:
+				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
+			case vmTabActions:
+				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership"
+			default:
+				return "?: help  m: themes  b/esc: host  left/right: tabs  r: refresh  p/f: power  o: console"
 			}
 		case modeAddHost:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeAddMapping:
+			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeAddDisk:
+			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeImportDisk:
+			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeAddNIC:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
@@ -1128,7 +1825,7 @@ func (m Model) helpText() string {
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, m themes, enter open host, t test, s setup, d remove. Host detail: left/right tabs. VMs: p lifecycle, o console. Mappings: n add, e start/stop, d remove."
+	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h. Mappings: n add, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
@@ -1136,6 +1833,13 @@ func ownerLabel(owner string) string {
 		return "unmanaged"
 	}
 	return owner
+}
+
+func valueOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (m Model) size() (int, int) {
@@ -1545,6 +2249,81 @@ func parseVMListOutput(out string) []VM {
 	return vms
 }
 
+func getVMDetail(h Host, vm VM) (VMDetail, string, error) {
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+policy=/var/lib/vmrelay/ownership.tsv
+if [ ! -r "$policy" ]; then policy=/dev/null; fi
+uuid="$(virsh -c qemu:///system domuuid "$vm" 2>/dev/null || true)"
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+owner=""
+shared="0"
+if [ -n "$uuid" ]; then
+  line="$(awk -F '\t' -v id="$uuid" '$1 == id { print; exit }' "$policy" 2>/dev/null || true)"
+  if [ -n "$line" ]; then
+    owner="$(printf '%%s\n' "$line" | awk -F '\t' '{print $2}')"
+    shared="$(printf '%%s\n' "$line" | awk -F '\t' '{print $3}')"
+  fi
+fi
+info="$(virsh -c qemu:///system dominfo "$vm" 2>/dev/null || true)"
+cpus="$(printf '%%s\n' "$info" | awk -F: '$1 == "CPU(s)" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+memory="$(printf '%%s\n' "$info" | awk -F: '$1 == "Max memory" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+autostart="$(printf '%%s\n' "$info" | awk -F: '$1 == "Autostart" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+graphics="$(virsh -c qemu:///system domdisplay "$vm" 2>/dev/null || true)"
+printf 'VMRELAY_DETAIL\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\n' "$vm" "$uuid" "$state" "$owner" "$shared" "$autostart" "$cpus" "$memory" "$graphics"
+virsh -c qemu:///system domblklist "$vm" --details 2>/dev/null | awk 'NR > 2 && NF >= 4 { source=$4; for (i=5; i<=NF; i++) source=source " " $i; printf "VMRELAY_DISK\t%%s\t%%s\t%%s\t%%s\n", $1, $2, $3, source }'
+virsh -c qemu:///system domiflist "$vm" 2>/dev/null | awk 'NR > 2 && NF >= 5 { printf "VMRELAY_NIC\t%%s\t%%s\t%%s\t%%s\t%%s\n", $1, $2, $3, $4, $5 }'
+`, shellQuote(vm.Name))
+	out, err := ssh(h.Target, script, 45*time.Second)
+	if err != nil {
+		return VMDetail{}, out, err
+	}
+	detail := parseVMDetailOutput(out)
+	if detail.VM.Name == "" {
+		detail.VM = vm
+	}
+	return detail, out, nil
+}
+
+func parseVMDetailOutput(out string) VMDetail {
+	var detail VMDetail
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		switch parts[0] {
+		case "VMRELAY_DETAIL":
+			for len(parts) < 10 {
+				parts = append(parts, "")
+			}
+			detail.VM = VM{
+				Name:   parts[1],
+				UUID:   parts[2],
+				State:  parts[3],
+				Owner:  parts[4],
+				Shared: parts[5] == "1" || strings.EqualFold(parts[5], "true"),
+			}
+			detail.Autostart = parts[6]
+			detail.CPUs = parts[7]
+			detail.Memory = parts[8]
+			detail.Graphics = parts[9]
+		case "VMRELAY_DISK":
+			for len(parts) < 5 {
+				parts = append(parts, "")
+			}
+			detail.Disks = append(detail.Disks, VMDisk{Type: parts[1], Device: parts[2], Target: parts[3], Source: parts[4]})
+		case "VMRELAY_NIC":
+			for len(parts) < 6 {
+				parts = append(parts, "")
+			}
+			detail.NICs = append(detail.NICs, VMNIC{Interface: parts[1], Type: parts[2], Source: parts[3], Model: parts[4], MAC: parts[5]})
+		}
+	}
+	return detail
+}
+
 func lifecycle(h Host, vmName, action string) (string, error) {
 	if action != "start" && action != "shutdown" && action != "destroy" {
 		return "", fmt.Errorf("unsupported action: %s", action)
@@ -1584,6 +2363,147 @@ rm -f "$tmp"
 echo "Ownership updated for %s."
 `, shellQuote(vm.UUID), shellQuote(vm.UUID), owner, shellQuote(sharedValue), vm.Name)
 	return ssh(h.Target, script, 30*time.Second)
+}
+
+func createAndAttachDisk(h Host, vmName string, req diskCreateRequest) (string, error) {
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+size=%d
+path=%s
+target=%s
+next_target() {
+  existing="$(virsh -c qemu:///system domblklist "$vm" --details 2>/dev/null | awk 'NR > 2 { print $3 }')"
+  for letter in b c d e f g h i j k l m n o p q r s t u v w x y z; do
+    candidate="vd${letter}"
+    if ! printf '%%s\n' "$existing" | grep -qx "$candidate"; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+if [ -z "$target" ]; then target="$(next_target)"; fi
+if [ -z "$target" ]; then echo "No free virtio disk target is available." >&2; exit 1; fi
+if [ -z "$path" ]; then
+  safe="$(printf '%%s' "$vm" | tr -c 'A-Za-z0-9_.-' '_')"
+  path="/var/lib/libvirt/images/${safe}-${target}.qcow2"
+fi
+case "$path" in /*) ;; *) echo "Disk path must be absolute: $path" >&2; exit 1 ;; esac
+if [ -e "$path" ]; then echo "Disk already exists: $path" >&2; exit 1; fi
+sudo -n install -d -m 0775 "$(dirname "$path")"
+sudo -n qemu-img create -f qcow2 "$path" "${size}G"
+sudo -n chown libvirt-qemu:kvm "$path" 2>/dev/null || sudo -n chown qemu:qemu "$path" 2>/dev/null || true
+sudo -n chmod 0660 "$path" 2>/dev/null || true
+flags="--config"
+if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+virsh -c qemu:///system attach-disk "$vm" "$path" "$target" --targetbus virtio --subdriver qcow2 --cache none $flags
+echo "Created and attached ${path} as ${target}."
+`, shellQuote(vmName), req.SizeGiB, shellQuote(req.Path), shellQuote(req.Target))
+	return ssh(h.Target, script, 3*time.Minute)
+}
+
+func importAndAttachDisk(h Host, vmName string, req diskImportRequest) (string, error) {
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+source=%s
+dest=%s
+target=%s
+next_target() {
+  existing="$(virsh -c qemu:///system domblklist "$vm" --details 2>/dev/null | awk 'NR > 2 { print $3 }')"
+  for letter in b c d e f g h i j k l m n o p q r s t u v w x y z; do
+    candidate="vd${letter}"
+    if ! printf '%%s\n' "$existing" | grep -qx "$candidate"; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+case "$source" in /*) ;; *) echo "Source path must be absolute: $source" >&2; exit 1 ;; esac
+[ -e "$source" ] || { echo "Source disk does not exist: $source" >&2; exit 1; }
+if [ -z "$target" ]; then target="$(next_target)"; fi
+if [ -z "$target" ]; then echo "No free virtio disk target is available." >&2; exit 1; fi
+if [ -z "$dest" ]; then
+  safe="$(printf '%%s' "$vm" | tr -c 'A-Za-z0-9_.-' '_')"
+  dest="/var/lib/libvirt/images/${safe}-${target}.qcow2"
+fi
+case "$dest" in /*) ;; *) echo "Destination path must be absolute: $dest" >&2; exit 1 ;; esac
+format="$(qemu-img info "$source" 2>/dev/null | awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+[ -n "$format" ] || { echo "Could not detect source format with qemu-img: $source" >&2; exit 1; }
+if [ "$format" = "qcow2" ] && [ "$source" = "$dest" ]; then
+  echo "Using existing qcow2 source without conversion."
+else
+  if [ -e "$dest" ]; then echo "Destination already exists: $dest" >&2; exit 1; fi
+  sudo -n install -d -m 0775 "$(dirname "$dest")"
+  if [ "$format" = "qcow2" ]; then
+    sudo -n cp --reflink=auto "$source" "$dest" 2>/dev/null || sudo -n cp "$source" "$dest"
+    echo "Copied qcow2 source to $dest."
+  else
+    sudo -n qemu-img convert -p -f "$format" -O qcow2 "$source" "$dest"
+    echo "Converted $format source to qcow2 at $dest."
+  fi
+fi
+sudo -n chown libvirt-qemu:kvm "$dest" 2>/dev/null || sudo -n chown qemu:qemu "$dest" 2>/dev/null || true
+sudo -n chmod 0660 "$dest" 2>/dev/null || true
+flags="--config"
+if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+virsh -c qemu:///system attach-disk "$vm" "$dest" "$target" --targetbus virtio --subdriver qcow2 --cache none $flags
+echo "Imported and attached ${dest} as ${target}."
+`, shellQuote(vmName), shellQuote(req.Source), shellQuote(req.Dest), shellQuote(req.Target))
+	return ssh(h.Target, script, 2*time.Hour)
+}
+
+func detachDisk(h Host, vmName string, disk VMDisk) (string, error) {
+	if disk.Target == "" {
+		return "", fmt.Errorf("disk target is missing")
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+target=%s
+flags="--config"
+if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+virsh -c qemu:///system detach-disk "$vm" "$target" $flags
+echo "Detached disk ${target}. Disk image was not deleted."
+`, shellQuote(vmName), shellQuote(disk.Target))
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func attachNIC(h Host, vmName string, req nicAddRequest) (string, error) {
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+source=%s
+model=%s
+flags="--config"
+if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+virsh -c qemu:///system attach-interface "$vm" --type network --source "$source" --model "$model" $flags
+echo "Attached ${model} NIC on network ${source}."
+`, shellQuote(vmName), shellQuote(req.Source), shellQuote(req.Model))
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func detachNIC(h Host, vmName string, nic VMNIC) (string, error) {
+	if nic.MAC == "" {
+		return "", fmt.Errorf("NIC MAC address is missing")
+	}
+	nicType := nic.Type
+	if nicType == "" {
+		nicType = "network"
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+nic_type=%s
+mac=%s
+flags="--config"
+if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+virsh -c qemu:///system detach-interface "$vm" --type "$nic_type" --mac "$mac" $flags
+echo "Detached NIC ${mac}."
+`, shellQuote(vmName), shellQuote(nicType), shellQuote(nic.MAC))
+	return ssh(h.Target, script, 45*time.Second)
 }
 
 func openConsole(h Host, vmName, stateDir string) (string, error) {
@@ -1957,6 +2877,13 @@ func versionParts(version string) []int {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
