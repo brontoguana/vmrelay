@@ -386,6 +386,47 @@ func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 	}
 }
 
+func TestCreateVMNameAllowsLongSafeNamesAndScrollsDisplay(t *testing.T) {
+	longName := strings.Repeat("a", maxVMNameRunes)
+	m := Model{
+		config:           Config{Theme: "Classic"},
+		mode:             modeCreateVM,
+		activeHost:       Host{Name: "iron"},
+		createVMName:     longName,
+		createVMMemory:   "4",
+		createVMCPUs:     "2",
+		createVMDiskSize: "64",
+		createVMDiskBus:  "sata",
+		createVMISO:      "~/Documents/windows.iso",
+		createVMNetwork:  "default",
+		createVMFirmware: "uefi",
+		createVMShared:   "no",
+		createVMField:    createVMFieldName,
+	}
+	if _, err := m.pendingVMCreate(); err != nil {
+		t.Fatalf("expected %d-character VM name to validate: %v", maxVMNameRunes, err)
+	}
+	m.createVMName = longName + "b"
+	if _, err := m.pendingVMCreate(); err == nil {
+		t.Fatalf("expected VM name longer than %d characters to fail", maxVMNameRunes)
+	}
+	m.createVMName = "windows_10_enterprise_draytek_vpn_virtualisation_server"
+	view := stripANSI(m.viewCreateVM(46, 20))
+	if !strings.Contains(view, "...n_virtualisation_server") {
+		t.Fatalf("active long VM name should show the typed suffix in narrow view:\n%s", view)
+	}
+
+	m.createVMName = strings.Repeat("x", maxVMNameRunes-1)
+	updated, _ := m.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y', 'z'}})
+	next := updated.(Model)
+	if got := len([]rune(next.createVMName)); got != maxVMNameRunes {
+		t.Fatalf("typed VM name should stop at %d runes, got %d", maxVMNameRunes, got)
+	}
+	if !strings.HasSuffix(next.createVMName, "y") {
+		t.Fatalf("expected first typed rune to fit and extra rune to be ignored, got %q", next.createVMName)
+	}
+}
+
 func TestISOEntryParsingAndPickerRendering(t *testing.T) {
 	out := strings.Join([]string{
 		"VMRELAY_ISO_DIR\t/home/simplehelp/Documents",

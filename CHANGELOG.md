@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.19 - 2026-05-05
+
+- Improved the create-VM name field so normal VM names can be up to 80 characters instead of feeling visually capped by the narrow form row.
+- Changed active create-wizard text fields to show the right-hand side of long values, so typing continues visibly on narrow terminals.
+- Bounded internal storage volume names with a short hash so long VM names do not create oversized libvirt volume filenames.
+
 ## 0.2.18 - 2026-05-05
 
 - Hardened startup self-update when sudo prompts for a password: VMRelay now repairs terminal mode with `stty sane` and runs the installer with stdin/stdout/stderr attached directly to `/dev/tty`.

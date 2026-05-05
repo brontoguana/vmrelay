@@ -126,7 +126,10 @@ const (
 	createVMFieldCount
 )
 
-const defaultCreateVMISOPath = "~/Documents/"
+const (
+	defaultCreateVMISOPath = "~/Documents/"
+	maxVMNameRunes         = 80
+)
 
 type Model struct {
 	version string
@@ -670,7 +673,7 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && createVMFieldEditable(m.createVMField) {
 			switch m.createVMField {
 			case 0:
-				m.createVMName += msg.String()
+				m.createVMName = appendLimitedRunes(m.createVMName, msg.String(), maxVMNameRunes)
 			case 1:
 				m.createVMMemory += msg.String()
 			case 2:
@@ -1599,6 +1602,9 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 	if !validName(name) {
 		return vmCreateRequest{}, fmt.Errorf("VM name must use letters, numbers, dot, dash, or underscore")
 	}
+	if len([]rune(name)) > maxVMNameRunes {
+		return vmCreateRequest{}, fmt.Errorf("VM name must be %d characters or fewer", maxVMNameRunes)
+	}
 	memoryGiB, err := strconv.Atoi(strings.TrimSpace(m.createVMMemory))
 	if err != nil || memoryGiB < 1 || memoryGiB > 1024 {
 		return vmCreateRequest{}, fmt.Errorf("memory must be 1-1024 GiB")
@@ -2104,18 +2110,27 @@ func (m Model) viewCreateVM(width, height int) string {
 		cursors[i] = " "
 	}
 	cursors[m.createVMField] = ">"
-	body := fmt.Sprintf("Create VM on %s\n\n%s Name:       %s\n%s Memory GiB: %s\n%s CPUs:       %s\n%s Disk GiB:   %s\n%s Disk bus:   %s\n%s ISO path:   %s\n%s Network:    %s\n%s Firmware:   %s\n%s Shared:     %s\n\nUp/down moves fields. Left/right changes preset fields. Enter on ISO path opens a remote directory picker; Enter on the final field creates the VM.\nDisk bus: sata is safest for Windows installers; virtio/scsi are better for prepared Linux or driver-ready Windows guests.\nVMRelay creates /var/lib/libvirt/images/<name>.qcow2, starts a VNC install VM, and records ownership for the remote SSH user.",
-		m.activeHost.Name,
-		cursors[createVMFieldName], m.createVMName,
-		cursors[createVMFieldMemory], m.createVMMemory,
-		cursors[createVMFieldCPUs], m.createVMCPUs,
-		cursors[createVMFieldDiskSize], m.createVMDiskSize,
-		cursors[createVMFieldDiskBus], m.createVMDiskBus,
-		cursors[createVMFieldISO], m.createVMISO,
-		cursors[createVMFieldNetwork], m.createVMNetwork,
-		cursors[createVMFieldFirmware], strings.ToUpper(m.createVMFirmware),
-		cursors[createVMFieldShared], sharedChoiceLabel(m.createVMShared))
-	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+	contentW := max(20, width-6)
+	valueW := max(8, contentW-14)
+	lines := []string{
+		"Create VM on " + m.activeHost.Name,
+		"",
+		createVMFormRow(cursors[createVMFieldName], "Name", m.createVMName, valueW, m.createVMField == createVMFieldName),
+		createVMFormRow(cursors[createVMFieldMemory], "Memory GiB", m.createVMMemory, valueW, m.createVMField == createVMFieldMemory),
+		createVMFormRow(cursors[createVMFieldCPUs], "CPUs", m.createVMCPUs, valueW, m.createVMField == createVMFieldCPUs),
+		createVMFormRow(cursors[createVMFieldDiskSize], "Disk GiB", m.createVMDiskSize, valueW, m.createVMField == createVMFieldDiskSize),
+		createVMFormRow(cursors[createVMFieldDiskBus], "Disk bus", m.createVMDiskBus, valueW, m.createVMField == createVMFieldDiskBus),
+		createVMFormRow(cursors[createVMFieldISO], "ISO path", m.createVMISO, valueW, m.createVMField == createVMFieldISO),
+		createVMFormRow(cursors[createVMFieldNetwork], "Network", m.createVMNetwork, valueW, m.createVMField == createVMFieldNetwork),
+		createVMFormRow(cursors[createVMFieldFirmware], "Firmware", strings.ToUpper(m.createVMFirmware), valueW, m.createVMField == createVMFieldFirmware),
+		createVMFormRow(cursors[createVMFieldShared], "Shared", sharedChoiceLabel(m.createVMShared), valueW, m.createVMField == createVMFieldShared),
+		"",
+		"Up/down moves fields. Left/right changes preset fields. Enter on ISO path opens a remote directory picker; Enter on the final field creates the VM.",
+		fmt.Sprintf("Names may use letters, numbers, dot, dash, or underscore, up to %d characters.", maxVMNameRunes),
+		"Disk bus: sata is safest for Windows installers; virtio/scsi are better for prepared Linux or driver-ready Windows guests.",
+		"VMRelay creates the boot disk in a libvirt storage pool, starts a VNC install VM, and records ownership for the remote SSH user.",
+	}
+	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.Join(lines, "\n"), contentW, height-4))
 }
 
 func (m Model) viewISOPicker(width, height int) string {
@@ -2149,6 +2164,17 @@ func (m Model) viewISOPicker(width, height int) string {
 	}
 	b.WriteString("\nEnter/right opens a directory or selects an ISO. Left/backspace goes up. Esc returns.")
 	return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.TrimRight(b.String(), "\n"), width-6, height-4))
+}
+
+func createVMFormRow(cursor, label, value string, valueW int, active bool) string {
+	return fmt.Sprintf("%s %-10s %s", cursor, label+":", createVMFieldDisplay(value, valueW, active))
+}
+
+func createVMFieldDisplay(value string, width int, active bool) string {
+	if active {
+		return clipTextTail(value, width)
+	}
+	return clipText(value, width)
 }
 
 func (m Model) viewMappings(width, height int) string {
@@ -2485,6 +2511,29 @@ func clipText(text string, width int) string {
 	return b.String() + "..."
 }
 
+func clipTextTail(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	if width <= 3 {
+		return strings.Repeat(".", width)
+	}
+	limit := width - 3
+	runes := []rune(text)
+	start := len(runes)
+	for start > 0 {
+		next := string(runes[start-1:])
+		if lipgloss.Width(next) > limit {
+			break
+		}
+		start--
+	}
+	return "..." + string(runes[start:])
+}
+
 func paths() (string, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -2653,6 +2702,21 @@ func trimLastRune(s string) string {
 	}
 	_, size := utf8.DecodeLastRuneInString(s)
 	return s[:len(s)-size]
+}
+
+func appendLimitedRunes(existing, addition string, limit int) string {
+	if limit <= 0 {
+		return existing
+	}
+	remaining := limit - len([]rune(existing))
+	if remaining <= 0 {
+		return existing
+	}
+	runes := []rune(addition)
+	if len(runes) > remaining {
+		runes = runes[:remaining]
+	}
+	return existing + string(runes)
 }
 
 func checkHost(h Host) (string, error) {
@@ -3037,7 +3101,9 @@ storage_pool="$(select_pool)"
 storage_target="$(pool_target "$storage_pool")"
 [ -n "$storage_target" ] || { echo "Could not determine target path for libvirt storage pool: $storage_pool" >&2; exit 1; }
 
-safe="$(printf '%%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
+base_safe="$(printf '%%s' "$name" | tr -c 'A-Za-z0-9_.-' '_' | cut -c 1-72)"
+name_hash="$(printf '%%s' "$name" | cksum | awk '{ print $1 }')"
+safe="${base_safe}-${name_hash}"
 disk_vol="${safe}.qcow2"
 if virsh -c qemu:///system vol-info --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1; then
   echo "Disk volume already exists in pool ${storage_pool}: ${disk_vol}" >&2
