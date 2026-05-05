@@ -37,7 +37,7 @@ Inside the TUI:
 9. In VM detail, use Summary, Disks, NICs, and Actions tabs.
 10. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, `enter` to make the selected disk first in boot order, or `x` to detach the selected disk/eject selected ISO media.
 11. In NICs, press `n` to attach a libvirt network NIC or `x` to detach the selected NIC.
-12. In Actions, press `d` to duplicate a powered-off VM to a new name.
+12. In Actions, press `d` to duplicate a powered-off VM, type the new VM name, then press `Enter`.
 13. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
 
 ## Capabilities
@@ -51,7 +51,7 @@ Inside the TUI:
 - VM creation from the host VMs or Config tab creates a qcow2 boot disk through the VMRelay storage pool when present, falls back to existing active libvirt pools for older hosts, stages user-home ISOs into libvirt-readable storage when needed, starts a VNC installer VM with selectable disk bus, BIOS/UEFI firmware, device-level CDROM-first installer boot order, NAT networking with a Windows-compatible `e1000e` NIC, USB tablet input, and UEFI Secure Boot plus TPM 2.0 when UEFI is selected, and records VMRelay ownership for the remote SSH user when the ownership policy is writable. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, VM names up to 80 characters, horizontally scrolling active text fields, and a read-only remote ISO picker rooted initially at the remote user's `~/Documents/`, with `~` paths accepted for ISO files.
 - VM inventory shows state plus VMRelay ownership status.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
-- VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, and powered-off VM duplication to a new name.
+- VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, and powered-off VM duplication with an editable new-name prompt.
 - Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, detach disks without deleting their image files, and eject selected CDROM/ISO media.
 - NIC management can attach an interface to a libvirt network such as `default`, defaulting to `e1000e` for stock Windows compatibility, and detach selected interfaces by MAC address.
 - Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.

@@ -391,7 +391,7 @@ func (m Model) View() string {
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" || msg.String() == "q" {
+	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM) {
 		return m, tea.Quit
 	}
 	if msg.String() == "?" {
@@ -2318,7 +2318,7 @@ func (m Model) viewAddNIC(width, height int) string {
 
 func (m Model) viewDuplicateVM(width, height int) string {
 	valueW := max(12, width-22)
-	body := fmt.Sprintf("Duplicate VM\n\nSource:   %s\nNew name: %s\n\nThe source VM must be powered off so its disks can be cloned safely.\nInstaller ISO media is ejected from the duplicate after cloning.\nEnter duplicates. Esc cancels.",
+	body := fmt.Sprintf("Duplicate VM\n\nSource:     %s\n> New name: %s\n\nType the exact name for the duplicate VM.\nThe source VM must be powered off so its disks can be cloned safely.\nInstaller ISO media is ejected from the duplicate after cloning.\nEnter duplicates. Esc cancels.",
 		m.vmDetail.VM.Name,
 		clipTextTail(m.duplicateVMName, valueW))
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
@@ -2412,7 +2412,7 @@ func (m Model) helpText() string {
 		case modeAddNIC:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeDuplicateVM:
-			return "enter: duplicate  esc: cancel  q: quit"
+			return "type name  enter: duplicate  esc: cancel"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		case modeUpdate:

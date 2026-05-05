@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.26 - 2026-05-05
+
+- Fixed the VM duplicate name prompt so `q` is entered as normal text instead of quitting the app.
+- Removed the misleading `q: quit` footer from the duplicate prompt and made the editable new-name field more explicit.
+
 ## 0.2.25 - 2026-05-05
 
 - Changed new VM networking to default to an `e1000e` NIC on the selected libvirt NAT network instead of `virtio`, so stock Windows installers have a usable network adapter without virtio drivers.

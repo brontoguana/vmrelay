@@ -297,8 +297,20 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 		t.Fatalf("duplicate action did not open form with suggested name: %#v", next)
 	}
 	form := stripANSI(next.viewDuplicateVM(80, 16))
-	if !strings.Contains(form, "Source:   source-vm") || !strings.Contains(form, "New name: source-vm-copy") {
+	if !strings.Contains(form, "Source:     source-vm") || !strings.Contains(form, "> New name: source-vm-copy") {
 		t.Fatalf("duplicate form missing source/new name:\n%s", form)
+	}
+	if help := next.helpText(); strings.Contains(help, "q: quit") || !strings.Contains(help, "type name") {
+		t.Fatalf("duplicate footer should be a scoped form footer, got %q", help)
+	}
+	next.duplicateVMName = "dupli"
+	updated, cmd = next.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Fatal("typing q in duplicate form should not quit")
+	}
+	next = updated.(Model)
+	if next.duplicateVMName != "dupliq" {
+		t.Fatalf("typing q should edit the duplicate VM name, got %q", next.duplicateVMName)
 	}
 }
 
