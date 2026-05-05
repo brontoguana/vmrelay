@@ -47,7 +47,7 @@ Inside the TUI:
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts.
 - Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
-- VM creation from the host VMs or Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, and a read-only remote ISO picker rooted initially at `/var/lib/libvirt/boot/`.
+- VM creation from the host VMs or Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, and a read-only remote ISO picker rooted initially at the remote user's `~/Documents/`, with `~` paths accepted for ISO files.
 - VM inventory shows state plus VMRelay ownership status.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
 - VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.

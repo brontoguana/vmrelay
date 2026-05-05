@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.13 - 2026-05-05
+
+- Changed the create-VM ISO default from `/var/lib/libvirt/boot/` to the remote user's `~/Documents/`, falling back to the remote home directory if `Documents` is missing.
+- Allowed ISO paths beginning with `~/` in the create workflow and expanded them on the remote host before validating/executing `virt-install`.
+- Verified read-only on `iron` that `/home/simplehelp/Documents` exists and contains an ISO visible to the picker.
+
 ## 0.2.12 - 2026-05-05
 
 - Improved the create-VM wizard with up/down field navigation, left/right preset cycling for memory, CPUs, disk size, disk bus, firmware, and shared/private choices.

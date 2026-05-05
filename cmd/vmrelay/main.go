@@ -9,7 +9,7 @@ import (
 	"github.com/brontoguana/vmrelay/internal/app"
 )
 
-var version = "0.2.12"
+var version = "0.2.13"
 
 func main() {
 	for _, arg := range os.Args[1:] {

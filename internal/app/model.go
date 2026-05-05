@@ -127,6 +127,8 @@ const (
 	createVMFieldCount
 )
 
+const defaultCreateVMISOPath = "~/Documents/"
+
 type Model struct {
 	version string
 
@@ -898,12 +900,12 @@ func (m Model) beginCreateVM() Model {
 	m.createVMCPUs = "2"
 	m.createVMDiskSize = "64"
 	m.createVMDiskBus = "sata"
-	m.createVMISO = "/var/lib/libvirt/boot/"
+	m.createVMISO = defaultCreateVMISOPath
 	m.createVMNetwork = "default"
 	m.createVMFirmware = "uefi"
 	m.createVMShared = "no"
 	m.createVMField = 0
-	m.isoDir = "/var/lib/libvirt/boot"
+	m.isoDir = strings.TrimRight(defaultCreateVMISOPath, "/")
 	m.isoEntries = nil
 	m.isoCursor = 0
 	m.status = "Create a new VM from a remote ISO."
@@ -977,7 +979,7 @@ func cycleChoice(current string, choices []string, delta int) string {
 func (m Model) isoStartDir() string {
 	path := strings.TrimSpace(m.createVMISO)
 	if path == "" {
-		return "/var/lib/libvirt/boot"
+		return strings.TrimRight(defaultCreateVMISOPath, "/")
 	}
 	path = strings.TrimRight(path, "/")
 	if path == "" {
@@ -1496,7 +1498,7 @@ func (m Model) loadVMDetail(h Host, vm VM) (tea.Model, tea.Cmd) {
 
 func (m Model) loadISODir(dir string) (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(dir) == "" {
-		dir = "/var/lib/libvirt/boot"
+		dir = strings.TrimRight(defaultCreateVMISOPath, "/")
 	}
 	m.priorMode = modeISOPicker
 	m.mode = modeBusy
@@ -1505,7 +1507,11 @@ func (m Model) loadISODir(dir string) (tea.Model, tea.Cmd) {
 	m.errText = ""
 	return m, func() tea.Msg {
 		entries, out, err := listRemoteISOEntries(m.activeHost, dir)
-		return resultMsg{op: "iso-list", output: out, dir: dir, files: entries, err: err}
+		actualDir := isoDirFromOutput(out)
+		if actualDir == "" {
+			actualDir = dir
+		}
+		return resultMsg{op: "iso-list", output: out, dir: actualDir, files: entries, err: err}
 	}
 }
 
@@ -1630,7 +1636,7 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 		return vmCreateRequest{}, fmt.Errorf("disk bus must be sata, virtio, scsi, or ide")
 	}
 	iso := strings.TrimSpace(m.createVMISO)
-	if err := validateRequiredAbsPath(iso, "ISO path"); err != nil {
+	if err := validateRequiredRemotePath(iso, "ISO path"); err != nil {
 		return vmCreateRequest{}, err
 	}
 	if strings.HasSuffix(iso, "/") || !strings.EqualFold(filepath.Ext(iso), ".iso") {
@@ -1749,6 +1755,19 @@ func validateRequiredAbsPath(path, label string) error {
 		return fmt.Errorf("%s is required", label)
 	}
 	return validateOptionalAbsPath(path, label)
+}
+
+func validateRequiredRemotePath(path, label string) error {
+	if path == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	if strings.ContainsAny(path, "\r\n\t") {
+		return fmt.Errorf("%s must not contain control whitespace", label)
+	}
+	if strings.HasPrefix(path, "/") || path == "~" || strings.HasPrefix(path, "~/") {
+		return nil
+	}
+	return fmt.Errorf("%s must be an absolute remote path or start with ~/", label)
 }
 
 func validateOptionalAbsPath(path, label string) error {
@@ -2787,15 +2806,26 @@ func parseVMDetailOutput(out string) VMDetail {
 func listRemoteISOEntries(h Host, dir string) ([]remoteEntry, string, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
-		dir = "/var/lib/libvirt/boot"
+		dir = strings.TrimRight(defaultCreateVMISOPath, "/")
 	}
-	if !strings.HasPrefix(dir, "/") {
-		return nil, "", fmt.Errorf("directory must be an absolute remote path")
+	if !strings.HasPrefix(dir, "/") && dir != "~" && !strings.HasPrefix(dir, "~/") {
+		return nil, "", fmt.Errorf("directory must be an absolute remote path or start with ~/")
 	}
 	script := fmt.Sprintf(`
 set -euo pipefail
-dir=%s
+input=%s
+case "$input" in
+  "~") dir="$HOME" ;;
+  "~/"*) dir="$HOME/${input#\~/}" ;;
+  /*) dir="$input" ;;
+  *) echo "Directory must be absolute or start with ~/: $input" >&2; exit 1 ;;
+esac
+if [ "$dir" != "/" ]; then dir="${dir%%/}"; fi
+if [ ! -d "$dir" ] && { [ "$input" = "~/Documents" ] || [ "$input" = "~/Documents/" ]; }; then
+  dir="$HOME"
+fi
 [ -d "$dir" ] || { echo "Directory does not exist: $dir" >&2; exit 1; }
+dir="$(cd "$dir" && pwd -P)"
 printf 'VMRELAY_ISO_DIR\t%%s\n' "$dir"
 find "$dir" -maxdepth 1 -mindepth 1 \( -type d -o -type f \) -printf '%%f\t%%y\t%%p\n' 2>/dev/null | sort -f | while IFS="$(printf '\t')" read -r name type path; do
   case "$type:$name" in
@@ -2809,6 +2839,16 @@ done || true
 		return nil, out, err
 	}
 	return parseRemoteISOEntries(out), out, nil
+}
+
+func isoDirFromOutput(out string) string {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) >= 2 && parts[0] == "VMRELAY_ISO_DIR" {
+			return parts[1]
+		}
+	}
+	return ""
 }
 
 func parseRemoteISOEntries(out string) []remoteEntry {
@@ -2908,11 +2948,17 @@ network=%s
 firmware=%s
 shared=%s
 
+case "$iso" in
+  "~") iso="$HOME" ;;
+  "~/"*) iso="$HOME/${iso#\~/}" ;;
+  /*) ;;
+  *) echo "ISO path must be absolute or start with ~/: $iso" >&2; exit 1 ;;
+esac
+
 command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
 command -v qemu-img >/dev/null 2>&1 || { echo "qemu-img is missing; run setup for this host." >&2; exit 1; }
 virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
 virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
-case "$iso" in /*) ;; *) echo "ISO path must be absolute: $iso" >&2; exit 1 ;; esac
 [ -e "$iso" ] || { echo "ISO path does not exist: $iso" >&2; exit 1; }
 if [ "$firmware" = "uefi" ]; then
   if [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovmf ] && [ ! -e /usr/share/qemu/OVMF.fd ]; then

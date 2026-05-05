@@ -268,7 +268,7 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 		createVMCPUs:     "2",
 		createVMDiskSize: "64",
 		createVMDiskBus:  "sata",
-		createVMISO:      "/var/lib/libvirt/boot/windows.iso",
+		createVMISO:      "~/Documents/windows.iso",
 		createVMNetwork:  "default",
 		createVMFirmware: "uefi",
 		createVMShared:   "n",
@@ -289,7 +289,7 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	if _, err := m.pendingVMCreate(); err == nil {
 		t.Fatal("expected relative ISO path to fail")
 	}
-	m.createVMISO = "/var/lib/libvirt/boot/windows.iso"
+	m.createVMISO = "~/Documents/windows.iso"
 	m.createVMFirmware = "coreboot"
 	if _, err := m.pendingVMCreate(); err == nil {
 		t.Fatal("expected unsupported firmware to fail")
@@ -306,7 +306,7 @@ func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 		createVMCPUs:     "2",
 		createVMDiskSize: "64",
 		createVMDiskBus:  "sata",
-		createVMISO:      "/var/lib/libvirt/boot/windows.iso",
+		createVMISO:      "~/Documents/windows.iso",
 		createVMNetwork:  "default",
 		createVMFirmware: "uefi",
 		createVMShared:   "no",
@@ -348,17 +348,17 @@ func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 
 func TestISOEntryParsingAndPickerRendering(t *testing.T) {
 	out := strings.Join([]string{
-		"VMRELAY_ISO_DIR\t/var/lib/libvirt/boot",
-		"VMRELAY_ISO_ENTRY\tubuntu.iso\tfile\t/var/lib/libvirt/boot/ubuntu.iso",
-		"VMRELAY_ISO_ENTRY\twindows.iso\tfile\t/var/lib/libvirt/boot/windows.iso",
-		"VMRELAY_ISO_ENTRY\told\tdir\t/var/lib/libvirt/boot/old",
+		"VMRELAY_ISO_DIR\t/home/simplehelp/Documents",
+		"VMRELAY_ISO_ENTRY\tubuntu.iso\tfile\t/home/simplehelp/Documents/ubuntu.iso",
+		"VMRELAY_ISO_ENTRY\twindows.iso\tfile\t/home/simplehelp/Documents/windows.iso",
+		"VMRELAY_ISO_ENTRY\told\tdir\t/home/simplehelp/Documents/old",
 		"ignored diagnostic",
 	}, "\n")
 	entries := parseRemoteISOEntries(out)
 	if len(entries) != 4 {
 		t.Fatalf("expected parent, directory, and two ISO entries, got %#v", entries)
 	}
-	if entries[0].Name != ".." || !entries[0].Dir || entries[0].Path != "/var/lib/libvirt" {
+	if entries[0].Name != ".." || !entries[0].Dir || entries[0].Path != "/home/simplehelp" {
 		t.Fatalf("unexpected parent entry: %#v", entries[0])
 	}
 	if entries[1].Name != "old" || !entries[1].Dir {
@@ -368,7 +368,7 @@ func TestISOEntryParsingAndPickerRendering(t *testing.T) {
 		config:     Config{Theme: "Classic"},
 		mode:       modeISOPicker,
 		activeHost: Host{Name: "iron"},
-		isoDir:     "/var/lib/libvirt/boot",
+		isoDir:     "/home/simplehelp/Documents",
 		isoEntries: entries,
 		isoCursor:  2,
 	}
@@ -381,7 +381,7 @@ func TestISOEntryParsingAndPickerRendering(t *testing.T) {
 		t.Fatal("selecting an ISO should not start a command")
 	}
 	next := updated.(Model)
-	if next.mode != modeCreateVM || next.createVMISO != "/var/lib/libvirt/boot/ubuntu.iso" {
+	if next.mode != modeCreateVM || next.createVMISO != "/home/simplehelp/Documents/ubuntu.iso" {
 		t.Fatalf("ISO selection did not return to create form with selected ISO: %#v", next)
 	}
 }
@@ -391,7 +391,7 @@ func TestEnterOnISOFieldStartsRemotePicker(t *testing.T) {
 		config:      Config{Theme: "Classic"},
 		mode:        modeCreateVM,
 		activeHost:  Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
-		createVMISO: "/var/lib/libvirt/boot/",
+		createVMISO: "~/Documents/",
 	}
 	m.createVMField = createVMFieldISO
 	updated, cmd := m.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -399,7 +399,7 @@ func TestEnterOnISOFieldStartsRemotePicker(t *testing.T) {
 		t.Fatal("enter on ISO field should start remote directory loading")
 	}
 	next := updated.(Model)
-	if next.mode != modeBusy || next.priorMode != modeISOPicker || next.isoDir != "/var/lib/libvirt/boot" {
+	if next.mode != modeBusy || next.priorMode != modeISOPicker || next.isoDir != "~/Documents" {
 		t.Fatalf("unexpected state after opening ISO picker: %#v", next)
 	}
 }
@@ -416,7 +416,7 @@ func TestVMTabCanOpenCreateVM(t *testing.T) {
 		t.Fatal("expected no command when opening create form")
 	}
 	next := updated.(Model)
-	if next.mode != modeCreateVM || next.createVMFirmware != "uefi" || next.createVMDiskBus != "sata" || next.createVMISO != "/var/lib/libvirt/boot/" {
+	if next.mode != modeCreateVM || next.createVMFirmware != "uefi" || next.createVMDiskBus != "sata" || next.createVMISO != "~/Documents/" {
 		t.Fatalf("n on VM tab did not open create form with defaults: %#v", next)
 	}
 	if !strings.Contains(stripANSI(m.helpText()), "n: create VM") {
