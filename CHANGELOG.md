@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-05-05
+
+- Changed the TUI layout so the key-help footer is anchored at the bottom of the screen inside the outer border.
+- Changed the main panes, including the Hosts table, to fill the available screen area instead of rendering as compact content at the top.
+- Added layout tests for bottom-anchored status/help rows and full-height host pane rendering.
+
 ## 0.2.2 - 2026-05-05
 
 - Changed the Go TUI to render as a full-screen framed interface with a rounded outer border and centered `VMRelay` version title.

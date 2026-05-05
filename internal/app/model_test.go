@@ -37,7 +37,7 @@ func TestParseVMListOutputIgnoresRemoteDiagnostics(t *testing.T) {
 }
 
 func TestViewFrameFillsWindow(t *testing.T) {
-	m := Model{version: "0.2.2", config: Config{Theme: "Classic"}, width: 80, height: 20, mode: modeHosts, status: "Ready."}
+	m := Model{version: "0.2.3", config: Config{Theme: "Classic"}, width: 80, height: 20, mode: modeHosts, status: "Ready."}
 	view := m.View()
 	lines := strings.Split(view, "\n")
 	if len(lines) != 20 {
@@ -48,8 +48,17 @@ func TestViewFrameFillsWindow(t *testing.T) {
 			t.Fatalf("line %d width = %d, want 80: %q", i, w, line)
 		}
 	}
-	if !strings.Contains(stripANSI(lines[0]), "VMRelay 0.2.2") {
+	if !strings.Contains(stripANSI(lines[0]), "VMRelay 0.2.3") {
 		t.Fatalf("top border missing title/version: %q", lines[0])
+	}
+	if !strings.Contains(stripANSI(lines[len(lines)-2]), "?: help  m: themes") {
+		t.Fatalf("footer was not anchored above the bottom border: %q", lines[len(lines)-2])
+	}
+	if !strings.Contains(stripANSI(lines[len(lines)-3]), "Ready.") {
+		t.Fatalf("status was not anchored above the footer: %q", lines[len(lines)-3])
+	}
+	if !strings.Contains(stripANSI(lines[len(lines)-4]), "╰") {
+		t.Fatalf("hosts pane does not fill the available content area: %q", lines[len(lines)-4])
 	}
 }
 
@@ -69,7 +78,7 @@ func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 			{Name: "A-very-long-virtual-machine-name-that-should-not-shift-columns", State: "shut off", Owner: "alice", Shared: true},
 		},
 	}
-	view := stripANSI(m.viewVMs(98))
+	view := stripANSI(m.viewVMs(98, 18))
 	lines := strings.Split(view, "\n")
 	var header string
 	var rows []string

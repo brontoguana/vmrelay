@@ -176,29 +176,34 @@ func (m Model) View() string {
 	var b strings.Builder
 	w, h := m.size()
 	innerW := max(20, w-2)
+	innerH := max(1, h-2)
 	s := m.styles()
-	b.WriteString(s.faint.Render("System libvirt over SSH. noVNC and port tunnels stay loopback-bound.") + "\n\n")
+	footer := s.faint.Render(m.helpText())
+	status := m.statusLine()
+	contentH := max(1, innerH-2)
 
 	switch m.mode {
 	case modeAddHost:
-		b.WriteString(m.viewAddHost(innerW))
+		b.WriteString(m.viewAddHost(innerW, contentH))
 	case modeVMs:
-		b.WriteString(m.viewVMs(innerW))
+		b.WriteString(m.viewVMs(innerW, contentH))
 	case modeTheme:
-		b.WriteString(m.viewThemes(innerW))
+		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeBusy:
-		b.WriteString(m.viewBusy(innerW))
+		b.WriteString(m.viewBusy(innerW, contentH))
 	default:
-		b.WriteString(m.viewHosts(innerW))
+		b.WriteString(m.viewHosts(innerW, contentH))
 	}
 
-	if m.errText != "" {
-		b.WriteString("\n" + s.err.Render(m.errText) + "\n")
-	} else if m.status != "" {
-		b.WriteString("\n" + s.ok.Render(m.status) + "\n")
+	lines := strings.Split(b.String(), "\n")
+	if len(lines) > contentH {
+		lines = lines[:contentH]
 	}
-	b.WriteString("\n" + s.faint.Render(m.helpText()) + "\n")
-	return m.frame(w, h, b.String())
+	for len(lines) < contentH {
+		lines = append(lines, "")
+	}
+	lines = append(lines, padLine(status, innerW), padLine(footer, innerW))
+	return m.frame(w, h, strings.Join(lines, "\n"))
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -507,10 +512,29 @@ func (m Model) selectedVM() (VM, bool) {
 	return m.vms[m.vmCursor], true
 }
 
-func (m Model) viewHosts(width int) string {
-	var b strings.Builder
-	b.WriteString(m.styles().pane.Width(max(40, width-4)).Render(m.hostRows(width - 8)))
-	return b.String()
+func (m Model) statusLine() string {
+	s := m.styles()
+	if m.errText != "" {
+		return s.err.Render(firstLine(m.errText))
+	}
+	if m.status != "" {
+		return s.ok.Render(firstLine(m.status))
+	}
+	return ""
+}
+
+func firstLine(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		return text[:i]
+	}
+	return text
+}
+
+func (m Model) viewHosts(width, height int) string {
+	paneW := max(40, width-4)
+	paneH := max(3, height-2)
+	return m.styles().pane.Width(paneW).Height(paneH).Render(m.hostRows(paneW - 4))
 }
 
 func (m Model) hostRows(width int) string {
@@ -532,7 +556,7 @@ func (m Model) hostRows(width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (m Model) viewAddHost(width int) string {
+func (m Model) viewAddHost(width, height int) string {
 	nameCursor := " "
 	targetCursor := " "
 	if m.addField == 0 {
@@ -542,10 +566,10 @@ func (m Model) viewAddHost(width int) string {
 	}
 	body := fmt.Sprintf("Add Host\n\n%s Name:   %s\n%s Target: %s\n\nEnter moves/saves. Esc cancels.",
 		nameCursor, m.addName, targetCursor, m.addTarget)
-	return m.styles().pane.Width(max(40, width-4)).Render(body)
+	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render(body)
 }
 
-func (m Model) viewVMs(width int) string {
+func (m Model) viewVMs(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
 	bodyW := max(50, width-8)
@@ -553,7 +577,7 @@ func (m Model) viewVMs(width int) string {
 	b.WriteString(fmt.Sprintf("Host: %s  %s\n\n", m.activeHost.Name, s.faint.Render(m.activeHost.Target)))
 	if len(m.vms) == 0 {
 		b.WriteString("No VMs found under qemu:///system.")
-		return s.pane.Width(max(50, width-4)).Render(b.String())
+		return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(b.String())
 	}
 	b.WriteString("  " + cell("VM", nameW) + " " + cell("State", 12) + " " + cell("Owner", 14) + " " + cell("Visibility", 10) + "\n")
 	b.WriteString("  " + strings.Repeat("-", nameW) + " " + strings.Repeat("-", 12) + " " + strings.Repeat("-", 14) + " " + strings.Repeat("-", 10) + "\n")
@@ -572,10 +596,10 @@ func (m Model) viewVMs(width int) string {
 		}
 		b.WriteString(row + "\n")
 	}
-	return s.pane.Width(max(50, width-4)).Render(strings.TrimRight(b.String(), "\n"))
+	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-func (m Model) viewThemes(width int) string {
+func (m Model) viewThemes(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
 	b.WriteString("Themes\n\n")
@@ -593,11 +617,11 @@ func (m Model) viewThemes(width int) string {
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\nEnter selects. Esc returns without changing the saved theme.")
-	return s.pane.Width(max(50, width-4)).Render(strings.TrimRight(b.String(), "\n"))
+	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-func (m Model) viewBusy(width int) string {
-	return m.styles().pane.Width(max(40, width-4)).Render("Working\n\n" + m.status)
+func (m Model) viewBusy(width, height int) string {
+	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render("Working\n\n" + m.status)
 }
 
 func (m Model) helpText() string {
