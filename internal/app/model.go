@@ -93,6 +93,7 @@ const (
 	modeAddDisk
 	modeImportDisk
 	modeAddNIC
+	modeDuplicateVM
 	modeTheme
 	modeUpdate
 	modeBusy
@@ -197,6 +198,8 @@ type Model struct {
 	addNICSource string
 	addNICModel  string
 	addNICField  int
+
+	duplicateVMName string
 }
 
 type resultMsg struct {
@@ -364,6 +367,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewImportDisk(innerW, contentH))
 	case modeAddNIC:
 		b.WriteString(m.viewAddNIC(innerW, contentH))
+	case modeDuplicateVM:
+		b.WriteString(m.viewDuplicateVM(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeUpdate:
@@ -393,7 +398,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -421,6 +426,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateImportDiskKey(msg)
 	case modeAddNIC:
 		return m.updateAddNICKey(msg)
+	case modeDuplicateVM:
+		return m.updateDuplicateVMKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
 	case modeUpdate:
@@ -1074,6 +1081,13 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
 			return resultMsg{op: "share", output: out, err: err}
 		})
+	case "d":
+		if m.vmTab == vmTabActions {
+			m.mode = modeDuplicateVM
+			m.duplicateVMName = suggestedDuplicateName(m.vmDetail.VM.Name)
+			m.status = "Enter a new VM name for the duplicate."
+			m.errText = ""
+		}
 	case "n":
 		switch m.vmTab {
 		case vmTabDisks:
@@ -1136,6 +1150,33 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				out, err := setBootDisk(m.activeHost, vm.Name, disk)
 				return resultMsg{op: "disk-boot", output: out, err: err}
 			})
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateDuplicateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled VM duplicate."
+		m.errText = ""
+	case "enter":
+		name, err := m.pendingDuplicateVMName()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		source := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Duplicating "+source.Name+" as "+name+"...", "vm-duplicate", func() resultMsg {
+			out, err := duplicateVM(m.activeHost, source.Name, name)
+			return resultMsg{op: "vm-duplicate", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		m.duplicateVMName = trimLastRune(m.duplicateVMName)
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.duplicateVMName = appendLimitedRunes(m.duplicateVMName, msg.String(), maxVMNameRunes)
 		}
 	}
 	return m, nil
@@ -1382,6 +1423,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
 		}
 		return m.loadVMs(m.activeHost)
+	case "vm-duplicate":
+		m.status = strings.TrimSpace(msg.output)
+		if m.status == "" {
+			m.status = "VM duplicated."
+		}
+		m.hostTab = hostTabVMs
+		return m.loadVMs(m.activeHost)
 	case "vm-create":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1434,6 +1482,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Mapping stop failed: " + msg.err.Error()
 	case "vm-create":
 		return "VM creation failed: " + msg.err.Error()
+	case "vm-duplicate":
+		return "VM duplicate failed: " + msg.err.Error()
 	case "disk-create":
 		return "Disk creation failed: " + msg.err.Error()
 	case "disk-import":
@@ -1599,11 +1649,8 @@ func (m Model) pendingMapping() (PortMapping, error) {
 
 func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 	name := strings.TrimSpace(m.createVMName)
-	if !validName(name) {
-		return vmCreateRequest{}, fmt.Errorf("VM name must use letters, numbers, dot, dash, or underscore")
-	}
-	if len([]rune(name)) > maxVMNameRunes {
-		return vmCreateRequest{}, fmt.Errorf("VM name must be %d characters or fewer", maxVMNameRunes)
+	if err := validateVMName(name, "VM name"); err != nil {
+		return vmCreateRequest{}, err
 	}
 	memoryGiB, err := strconv.Atoi(strings.TrimSpace(m.createVMMemory))
 	if err != nil || memoryGiB < 1 || memoryGiB > 1024 {
@@ -1663,6 +1710,27 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 		Firmware:  firmware,
 		Shared:    shared,
 	}, nil
+}
+
+func (m Model) pendingDuplicateVMName() (string, error) {
+	name := strings.TrimSpace(m.duplicateVMName)
+	if err := validateVMName(name, "new VM name"); err != nil {
+		return "", err
+	}
+	if name == m.vmDetail.VM.Name {
+		return "", fmt.Errorf("new VM name must be different from the source VM")
+	}
+	return name, nil
+}
+
+func validateVMName(name, label string) error {
+	if !validName(name) {
+		return fmt.Errorf("%s must use letters, numbers, dot, dash, or underscore", label)
+	}
+	if len([]rune(name)) > maxVMNameRunes {
+		return fmt.Errorf("%s must be %d characters or fewer", label, maxVMNameRunes)
+	}
+	return nil
 }
 
 type diskCreateRequest struct {
@@ -2077,6 +2145,9 @@ func (m Model) viewVMActions(width, height int) string {
 		"  a: adopt unmanaged VM",
 		"  h: toggle shared/private",
 		"",
+		"Duplicate",
+		"  d: duplicate to new VM name",
+		"",
 		"Refresh",
 		"  r: reload detail",
 	}
@@ -2245,6 +2316,14 @@ func (m Model) viewAddNIC(width, height int) string {
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
+func (m Model) viewDuplicateVM(width, height int) string {
+	valueW := max(12, width-22)
+	body := fmt.Sprintf("Duplicate VM\n\nSource:   %s\nNew name: %s\n\nThe source VM must be powered off so its disks can be cloned safely.\nInstaller ISO media is ejected from the duplicate after cloning.\nEnter duplicates. Esc cancels.",
+		m.vmDetail.VM.Name,
+		clipTextTail(m.duplicateVMName, valueW))
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) viewThemes(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
@@ -2314,7 +2393,7 @@ func (m Model) helpText() string {
 			case vmTabNICs:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
 			case vmTabActions:
-				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership"
+				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership  d: duplicate"
 			default:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  r: refresh  p/f: power  o: console"
 			}
@@ -2332,6 +2411,8 @@ func (m Model) helpText() string {
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeAddNIC:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeDuplicateVM:
+			return "enter: duplicate  esc: cancel  q: quit"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		case modeUpdate:
@@ -2340,7 +2421,7 @@ func (m Model) helpText() string {
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h. Mappings: n add, e start/stop, d remove."
+	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h/d. Mappings: n add, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
@@ -2726,6 +2807,23 @@ func appendLimitedRunes(existing, addition string, limit int) string {
 	return existing + string(runes)
 }
 
+func suggestedDuplicateName(name string) string {
+	base := strings.TrimSpace(name)
+	if base == "" {
+		base = "vm"
+	}
+	suffix := "-copy"
+	if len([]rune(base))+len([]rune(suffix)) <= maxVMNameRunes {
+		return base + suffix
+	}
+	runes := []rune(base)
+	keep := maxVMNameRunes - len([]rune(suffix))
+	if keep < 1 {
+		return suffix[1:]
+	}
+	return string(runes[:keep]) + suffix
+}
+
 func checkHost(h Host) (string, error) {
 	script := `
 set -u
@@ -2736,6 +2834,7 @@ command -v virsh >/dev/null && printf 'virsh: yes\n' || printf 'virsh: missing\n
 virsh -c qemu:///system uri >/dev/null 2>&1 && printf 'libvirt system: yes\n' || printf 'libvirt system: unavailable\n'
 [ -e /dev/kvm ] && printf 'KVM: yes\n' || printf 'KVM: missing\n'
 command -v virt-install >/dev/null && printf 'virt-install: yes\n' || printf 'virt-install: missing\n'
+command -v virt-clone >/dev/null && printf 'virt-clone: yes\n' || printf 'virt-clone: missing\n'
 command -v qemu-img >/dev/null && printf 'qemu-img: yes\n' || printf 'qemu-img: missing\n'
 if [ -d /usr/share/OVMF ] || [ -d /usr/share/ovmf ] || [ -e /usr/share/qemu/OVMF.fd ]; then printf 'OVMF/UEFI: yes\n'; else printf 'OVMF/UEFI: missing\n'; fi
 command -v websockify >/dev/null && printf 'websockify: yes\n' || printf 'websockify: missing\n'
@@ -3300,20 +3399,165 @@ echo "Imported and attached ${dest} as ${target}."
 	return ssh(h.Target, script, 2*time.Hour)
 }
 
+func duplicateVM(h Host, sourceName, newName string) (string, error) {
+	if sourceName == "" {
+		return "", fmt.Errorf("source VM name is missing")
+	}
+	if err := validateVMName(newName, "new VM name"); err != nil {
+		return "", err
+	}
+	if sourceName == newName {
+		return "", fmt.Errorf("new VM name must be different from the source VM")
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+source=%s
+name=%s
+command -v virt-clone >/dev/null 2>&1 || { echo "virt-clone is required on the host. Run host setup or install virtinst." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to normalize cloned VM XML." >&2; exit 1; }
+virsh -c qemu:///system dominfo "$source" >/dev/null 2>&1 || { echo "Source VM not found: $source" >&2; exit 1; }
+if virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1; then
+  echo "VM already exists: $name" >&2
+  exit 1
+fi
+state="$(virsh -c qemu:///system domstate "$source" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+case "$state" in
+  running*|paused*|pmsuspended*) echo "Power off ${source} before duplicating it so disk contents are copied consistently." >&2; exit 1 ;;
+esac
+
+policy=/var/lib/vmrelay/ownership.tsv
+source_shared=0
+source_uuid="$(virsh -c qemu:///system domuuid "$source" 2>/dev/null || true)"
+if [ -n "$source_uuid" ] && [ -r "$policy" ]; then
+  source_shared="$(awk -F '\t' -v id="$source_uuid" '$1 == id { print $3; exit }' "$policy" 2>/dev/null || true)"
+fi
+case "$source_shared" in 1|true|TRUE|yes|YES) source_shared=1 ;; *) source_shared=0 ;; esac
+
+virt-clone --connect qemu:///system --original "$source" --name "$name" --auto-clone --quiet
+
+tmp="$(mktemp)"
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT
+virsh -c qemu:///system dumpxml --inactive "$name" >"$tmp"
+python3 - "$tmp" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+tree = ET.parse(path)
+root = tree.getroot()
+os_el = root.find("os")
+os_boot_devs = []
+removed_os_cdrom = False
+if os_el is not None:
+    for boot in list(os_el.findall("boot")):
+        dev = boot.get("dev", "")
+        os_el.remove(boot)
+        if dev == "cdrom":
+            removed_os_cdrom = True
+        elif dev:
+            os_boot_devs.append(dev)
+devices = root.find("devices")
+if devices is not None:
+    ordered_disks = []
+    first_disk = None
+    removed_cdrom_boot = False
+    for disk in devices.findall("disk"):
+        target = disk.find("target")
+        dev = target.get("dev") if target is not None else ""
+        if disk.get("device") == "cdrom":
+            for source in list(disk.findall("source")):
+                disk.remove(source)
+            for boot in list(disk.findall("boot")):
+                disk.remove(boot)
+                removed_cdrom_boot = True
+            continue
+        if disk.get("device") != "disk":
+            continue
+        if first_disk is None:
+            first_disk = disk
+        order = None
+        for boot in list(disk.findall("boot")):
+            try:
+                order = int(boot.get("order", "0"))
+            except ValueError:
+                order = None
+            disk.remove(boot)
+        if order is not None:
+            ordered_disks.append((order, dev, disk))
+    if ordered_disks:
+        for index, (_, _, disk) in enumerate(sorted(ordered_disks, key=lambda item: (item[0], item[1])), start=1):
+            ET.SubElement(disk, "boot", {"order": str(index)})
+    elif removed_cdrom_boot and first_disk is not None:
+        ET.SubElement(first_disk, "boot", {"order": "1"})
+if os_el is not None:
+    if os_boot_devs:
+        for dev in os_boot_devs:
+            ET.SubElement(os_el, "boot", {"dev": dev})
+    elif removed_os_cdrom:
+        ET.SubElement(os_el, "boot", {"dev": "hd"})
+tree.write(path, encoding="unicode")
+PY
+virsh -c qemu:///system define "$tmp" >/dev/null
+
+uuid="$(virsh -c qemu:///system domuuid "$name")"
+owner="$(whoami)"
+if [ -w "$policy" ]; then
+  tmp_policy="$(mktemp)"
+  awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp_policy" 2>/dev/null || true
+  printf '%%s\t%%s\t%%s\n' "$uuid" "$owner" "$source_shared" >>"$tmp_policy"
+  cat "$tmp_policy" >"$policy"
+  rm -f "$tmp_policy"
+else
+  echo "Warning: could not record VMRelay ownership for ${name}; ownership policy is not writable." >&2
+fi
+
+echo "Duplicated ${source} as ${name}."
+echo "The duplicate is powered off. Installer ISO media was ejected from the duplicate."
+`, shellQuote(sourceName), shellQuote(newName))
+	return ssh(h.Target, script, 4*time.Hour)
+}
+
 func detachDisk(h Host, vmName string, disk VMDisk) (string, error) {
+	script, err := detachDiskScript(vmName, disk)
+	if err != nil {
+		return "", err
+	}
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func detachDiskScript(vmName string, disk VMDisk) (string, error) {
 	if disk.Target == "" {
 		return "", fmt.Errorf("disk target is missing")
+	}
+	device := "disk"
+	if isCDROMDisk(disk) {
+		device = "cdrom"
 	}
 	script := fmt.Sprintf(`
 set -euo pipefail
 vm=%s
 target=%s
+device=%s
 flags="--config"
 if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
+if [ "$device" = "cdrom" ]; then
+  if ! virsh -c qemu:///system domblklist "$vm" --details 2>/dev/null | awk -v target="$target" 'NR > 2 && $3 == target && NF >= 4 && $4 != "-" { found=1 } END { exit found ? 0 : 1 }'; then
+    echo "CDROM ${target} has no ISO media attached."
+    exit 0
+  fi
+  virsh -c qemu:///system change-media "$vm" "$target" --eject --force $flags
+  echo "Ejected ISO media from CDROM ${target}. CDROM device was kept."
+  exit 0
+fi
 virsh -c qemu:///system detach-disk "$vm" "$target" $flags
 echo "Detached disk ${target}. Disk image was not deleted."
-`, shellQuote(vmName), shellQuote(disk.Target))
-	return ssh(h.Target, script, 45*time.Second)
+`, shellQuote(vmName), shellQuote(disk.Target), shellQuote(device))
+	return script, nil
+}
+
+func isCDROMDisk(disk VMDisk) bool {
+	return strings.EqualFold(disk.Device, "cdrom") || strings.EqualFold(disk.Type, "cdrom")
 }
 
 func setBootDisk(h Host, vmName string, disk VMDisk) (string, error) {

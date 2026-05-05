@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.22 - 2026-05-05
+
+- Added a VM detail Actions tab duplicate flow: press `d`, enter a new VM name, and VMRelay clones the powered-off VM with `virt-clone`.
+- Normalized duplicated VM definitions so installer ISO media is ejected from the clone and disk boot order remains usable.
+- Fixed CDROM/ISO detach from the Disks tab by ejecting media with `virsh change-media --eject` instead of treating the CDROM like a normal disk detach.
+- Added host readiness reporting for `virt-clone`.
+
 ## 0.2.21 - 2026-05-05
 
 - Added one-column left padding to the bottom status and key-help rows inside the TUI border.

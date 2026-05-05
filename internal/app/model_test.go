@@ -271,6 +271,82 @@ func TestVMDetailRendersDiskAndNICTabs(t *testing.T) {
 	}
 }
 
+func TestVMActionsExposeDuplicateFlow(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmTab:      vmTabActions,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "shut off"},
+		},
+	}
+	view := stripANSI(m.viewVMDetail(100, 20))
+	if !strings.Contains(view, "Duplicate") || !strings.Contains(view, "d: duplicate") {
+		t.Fatalf("actions tab should expose duplicate action:\n%s", view)
+	}
+	if !strings.Contains(m.helpText(), "d: duplicate") {
+		t.Fatalf("actions help should advertise duplicate: %q", m.helpText())
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if cmd != nil {
+		t.Fatal("opening duplicate form should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeDuplicateVM || next.duplicateVMName != "source-vm-copy" {
+		t.Fatalf("duplicate action did not open form with suggested name: %#v", next)
+	}
+	form := stripANSI(next.viewDuplicateVM(80, 16))
+	if !strings.Contains(form, "Source:   source-vm") || !strings.Contains(form, "New name: source-vm-copy") {
+		t.Fatalf("duplicate form missing source/new name:\n%s", form)
+	}
+}
+
+func TestDuplicateVMNameValidation(t *testing.T) {
+	m := Model{
+		vmDetail:        VMDetail{VM: VM{Name: "source-vm"}},
+		duplicateVMName: "source-vm-copy",
+	}
+	name, err := m.pendingDuplicateVMName()
+	if err != nil {
+		t.Fatalf("expected duplicate name to validate: %v", err)
+	}
+	if name != "source-vm-copy" {
+		t.Fatalf("unexpected duplicate name: %q", name)
+	}
+	m.duplicateVMName = "source-vm"
+	if _, err := m.pendingDuplicateVMName(); err == nil {
+		t.Fatal("expected duplicate name matching source to fail")
+	}
+	m.duplicateVMName = "bad name"
+	if _, err := m.pendingDuplicateVMName(); err == nil {
+		t.Fatal("expected duplicate name with spaces to fail")
+	}
+	long := strings.Repeat("a", maxVMNameRunes)
+	if got := suggestedDuplicateName(long); len([]rune(got)) != maxVMNameRunes || !strings.HasSuffix(got, "-copy") {
+		t.Fatalf("suggested duplicate name should be capped with suffix, got %q (%d runes)", got, len([]rune(got)))
+	}
+}
+
+func TestCDROMDetachUsesMediaEject(t *testing.T) {
+	if !isCDROMDisk(VMDisk{Type: "file", Device: "cdrom", Target: "hda"}) {
+		t.Fatal("cdrom device should be treated as CDROM media")
+	}
+	if !isCDROMDisk(VMDisk{Type: "cdrom", Target: "hda"}) {
+		t.Fatal("cdrom type should be treated as CDROM media")
+	}
+	if isCDROMDisk(VMDisk{Type: "file", Device: "disk", Target: "vda"}) {
+		t.Fatal("normal disk should not be treated as CDROM media")
+	}
+	script, err := detachDiskScript("vm1", VMDisk{Type: "file", Device: "cdrom", Target: "hda"})
+	if err != nil {
+		t.Fatalf("detachDiskScript returned error: %v", err)
+	}
+	if !strings.Contains(script, "device='cdrom'") || !strings.Contains(script, "change-media") || !strings.Contains(script, "--eject") {
+		t.Fatalf("cdrom detach script should eject media with virsh change-media:\n%s", script)
+	}
+}
+
 func TestPendingMappingValidation(t *testing.T) {
 	m := Model{
 		activeHost:       Host{Name: "iron"},

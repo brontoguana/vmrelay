@@ -35,9 +35,10 @@ Inside the TUI:
 7. In VMs, press `n` to create a new VM from a remote ISO path; use up/down to move fields, left/right to cycle preset values, and press `Enter` on the ISO field to browse remote directories and `.iso` files.
 8. Select a VM and press `Enter` to open its VM detail screen.
 9. In VM detail, use Summary, Disks, NICs, and Actions tabs.
-10. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, `enter` to make the selected disk first in boot order, or `x` to detach the selected disk.
+10. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, `enter` to make the selected disk first in boot order, or `x` to detach the selected disk/eject selected ISO media.
 11. In NICs, press `n` to attach a libvirt network NIC or `x` to detach the selected NIC.
-12. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
+12. In Actions, press `d` to duplicate a powered-off VM to a new name.
+13. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
 
 ## Capabilities
 
@@ -45,13 +46,13 @@ Inside the TUI:
 - Startup prompts for update-and-restart when a newer GitHub release is available, handing off to a restored `/dev/tty` terminal before running the installer so interactive sudo prompts work correctly.
 - The TUI uses a full-screen terminal layout with a VMRelay title border, one outer line frame, and ten selectable themes.
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
-- Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts, then initializes a VMRelay libvirt storage pool at `/var/lib/vmrelay/images`.
+- Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`/`virt-clone`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts, then initializes a VMRelay libvirt storage pool at `/var/lib/vmrelay/images`.
 - Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
 - VM creation from the host VMs or Config tab creates a qcow2 boot disk through the VMRelay storage pool when present, falls back to existing active libvirt pools for older hosts, stages user-home ISOs into libvirt-readable storage when needed, starts a VNC installer VM with selectable disk bus, BIOS/UEFI firmware, CDROM-first installer boot order, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user when the ownership policy is writable. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, VM names up to 80 characters, horizontally scrolling active text fields, and a read-only remote ISO picker rooted initially at the remote user's `~/Documents/`, with `~` paths accepted for ISO files.
 - VM inventory shows state plus VMRelay ownership status.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
-- VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
-- Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, and detach disks without deleting their image files.
+- VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, and powered-off VM duplication to a new name.
+- Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, detach disks without deleting their image files, and eject selected CDROM/ISO media.
 - NIC management can attach a virtio interface to a libvirt network such as `default` and detach selected interfaces by MAC address.
 - Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.
 - VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`; console URLs enable noVNC's local pointer dot and low-latency settings by default, and if the preferred local console port is busy, VMRelay automatically picks the next available local port.
