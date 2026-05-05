@@ -229,6 +229,9 @@ func TestVMDetailRendersDiskAndNICTabs(t *testing.T) {
 	if !strings.Contains(disks, "Disks") || !strings.Contains(disks, "vda") || !strings.Contains(disks, "vm1.qcow2") {
 		t.Fatalf("disk tab did not render disk detail:\n%s", disks)
 	}
+	if help := m.helpText(); !strings.Contains(help, "enter: boot disk") {
+		t.Fatalf("disk tab help should expose boot disk action: %q", help)
+	}
 	m.vmTab = vmTabNICs
 	nics := stripANSI(m.viewVMDetail(100, 20))
 	if !strings.Contains(nics, "NICs") || !strings.Contains(nics, "52:54:00:12:34:56") || !strings.Contains(nics, "default") {

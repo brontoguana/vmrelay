@@ -1,5 +1,6 @@
 /.lore/
 /TRACKING.md
+/DEBUGLOG.md
 /dist/
 /vmrelay
 *.tmp

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.8 - 2026-05-05
+
+- Added a VM detail Disks action to set the selected disk as the VM's first boot disk in persistent libvirt configuration.
+- Updated the Disks footer/help and README so imported boot disks can be made bootable from the TUI after import/conversion.
+
 ## 0.2.7 - 2026-05-05
 
 - Fixed browser console launch so an occupied preferred local console port no longer fails the operation; VMRelay now scans forward to the next available local port and reports the adjusted URL.

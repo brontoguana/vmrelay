@@ -850,6 +850,18 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return resultMsg{op: "nic-detach", output: out, err: err}
 			})
 		}
+	case "enter":
+		if m.vmTab == vmTabDisks {
+			disk, ok := m.selectedDisk()
+			if !ok || disk.Target == "" {
+				return m, nil
+			}
+			vm := m.vmDetail.VM
+			return m.busy(modeVMDetail, "Setting "+disk.Target+" as boot disk for "+vm.Name+"...", "disk-boot", func() resultMsg {
+				out, err := setBootDisk(m.activeHost, vm.Name, disk)
+				return resultMsg{op: "disk-boot", output: out, err: err}
+			})
+		}
 	}
 	return m, nil
 }
@@ -1105,7 +1117,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
 		}
 		return m.loadVMs(m.activeHost)
-	case "disk-create", "disk-import", "disk-detach", "nic-add", "nic-detach":
+	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
 			m.status = msg.op + " complete."
@@ -1152,6 +1164,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Disk import failed: " + msg.err.Error()
 	case "disk-detach":
 		return "Disk detach failed: " + msg.err.Error()
+	case "disk-boot":
+		return "Boot disk update failed: " + msg.err.Error()
 	case "nic-add":
 		return "NIC attach failed: " + msg.err.Error()
 	case "nic-detach":
@@ -1799,7 +1813,7 @@ func (m Model) helpText() string {
 		case modeVMDetail:
 			switch m.vmTab {
 			case vmTabDisks:
-				return "?: help  m: themes  b/esc: host  left/right: tabs  n: create disk  i: import disk  x: detach  r: refresh"
+				return "?: help  m: themes  b/esc: host  left/right: tabs  enter: boot disk  n/i: add/import  x: detach"
 			case vmTabNICs:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
 			case vmTabActions:
@@ -2467,6 +2481,61 @@ flags="--config"
 if virsh -c qemu:///system domstate "$vm" 2>/dev/null | grep -qi '^running'; then flags="--live --config"; fi
 virsh -c qemu:///system detach-disk "$vm" "$target" $flags
 echo "Detached disk ${target}. Disk image was not deleted."
+`, shellQuote(vmName), shellQuote(disk.Target))
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func setBootDisk(h Host, vmName string, disk VMDisk) (string, error) {
+	if disk.Target == "" {
+		return "", fmt.Errorf("disk target is missing")
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+target=%s
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to update VM boot order." >&2; exit 1; }
+tmp="$(mktemp)"
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT
+virsh -c qemu:///system dumpxml "$vm" >"$tmp"
+python3 - "$tmp" "$target" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path, target = sys.argv[1], sys.argv[2]
+tree = ET.parse(path)
+root = tree.getroot()
+
+os_el = root.find("os")
+if os_el is not None:
+    for boot in list(os_el.findall("boot")):
+        os_el.remove(boot)
+
+devices = root.find("devices")
+found = False
+if devices is not None:
+    for dev in list(devices):
+        for boot in list(dev.findall("boot")):
+            dev.remove(boot)
+    for disk in devices.findall("disk"):
+        target_el = disk.find("target")
+        if disk.get("device") == "disk" and target_el is not None and target_el.get("dev") == target:
+            ET.SubElement(disk, "boot", {"order": "1"})
+            found = True
+            break
+
+if not found:
+    sys.stderr.write(f"Disk target not found in VM XML: {target}\n")
+    sys.exit(2)
+
+tree.write(path, encoding="unicode")
+PY
+virsh -c qemu:///system define "$tmp" >/dev/null
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null || true)"
+echo "Set ${target} as the first boot disk for ${vm}."
+case "$state" in
+  running*) echo "Power off and start the VM for the new boot order to take effect." ;;
+esac
 `, shellQuote(vmName), shellQuote(disk.Target))
 	return ssh(h.Target, script, 45*time.Second)
 }
