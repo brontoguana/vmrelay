@@ -27,21 +27,25 @@ vmrelay
 Inside the TUI:
 
 1. Press `a` to add a host such as `iron` with an SSH target such as `aem@iron`.
-2. Press `m` to browse and select a saved theme.
+2. Press `m` from the bottom controls row to browse and select a saved theme.
 3. Press `t` to test SSH, libvirt, KVM, noVNC, and websockify.
 4. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
-5. Press `Enter` to open the VM list for the selected host.
-6. Select a VM and press `o` to open its browser console.
+5. Press `Enter` to open the selected host detail screen.
+6. Use `left`/`right` to switch between VMs, Config, and Mappings.
+7. Select a VM and press `o` to open its browser console.
+8. In Mappings, press `n` to add a local SSH port mapping and `e` to start or stop it.
 
 ## Capabilities
 
 - Host manager opens by default; there is no separate day-to-day CLI workflow.
 - Startup prompts for update-and-restart when a newer GitHub release is available.
-- The TUI uses a full-screen terminal layout with a VMRelay title border and ten selectable themes.
+- The TUI uses a full-screen terminal layout with a VMRelay title border, one outer line frame, and ten selectable themes.
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, noVNC, and websockify on apt-based hosts.
+- Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
 - VM inventory shows state plus VMRelay ownership status.
 - VM actions currently include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
+- Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.
 - VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`.
 - VMRelay imports legacy host definitions from `~/.config/vmrelay/hosts.d` when present.
 
@@ -72,11 +76,15 @@ Local config:
 ~/.config/vmrelay/config.json
 ```
 
+This stores hosts, theme choice, and local port mapping definitions for this workstation/user.
+
 Local runtime state:
 
 ```text
 ~/.local/state/vmrelay
 ```
+
+This stores SSH control sockets and transient console/mapping runtime state.
 
 Remote VMRelay policy state:
 

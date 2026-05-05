@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.5 - 2026-05-05
+
+- Removed the in-pane Hosts theme button so theme selection is only exposed through the bottom controls row.
+- Removed inner pane line borders so the TUI uses one outer rounded frame around the full screen.
+- Added a host detail screen with VMs, Config, and Mappings tabs.
+- Added local per-host port mapping configuration in the host detail screen, including add/remove plus SSH local-forward start/stop actions.
+- Added tests for the single-frame layout, mapping rendering, and mapping validation.
+
 ## 0.2.4 - 2026-05-05
 
 - Added a startup GitHub release check. If a newer VMRelay release is available, the TUI asks whether to update with the release installer and restart before continuing.

@@ -57,8 +57,12 @@ func TestViewFrameFillsWindow(t *testing.T) {
 	if !strings.Contains(stripANSI(lines[len(lines)-3]), "Ready.") {
 		t.Fatalf("status was not anchored above the footer: %q", lines[len(lines)-3])
 	}
-	if !strings.Contains(stripANSI(lines[len(lines)-4]), "╰") {
-		t.Fatalf("hosts pane does not fill the available content area: %q", lines[len(lines)-4])
+	plain := stripANSI(view)
+	if strings.Count(plain, "╭") != 1 || strings.Count(plain, "╰") != 1 {
+		t.Fatalf("expected only the outer rounded border, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "Theme:") {
+		t.Fatalf("theme control should live in the footer, not the hosts table:\n%s", plain)
 	}
 }
 
@@ -158,6 +162,45 @@ func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 		if !strings.HasPrefix(visibilityText, "private") && !strings.HasPrefix(visibilityText, "shared") {
 			t.Fatalf("visibility column shifted in row %q; got visibility field %q", row, visibilityText)
 		}
+	}
+}
+
+func TestHostDetailRendersMappings(t *testing.T) {
+	m := Model{
+		config: Config{
+			Theme: "Classic",
+			Mappings: []PortMapping{
+				{ID: "map1", Host: "iron", Name: "Web", LocalPort: 8080, RemoteHost: "127.0.0.1", RemotePort: 8081},
+			},
+		},
+		mode:       modeVMs,
+		hostTab:    hostTabMappings,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		stateDir:   t.TempDir(),
+	}
+	view := stripANSI(m.viewHostDetail(100, 20))
+	if !strings.Contains(view, "Mappings") || !strings.Contains(view, "Web") {
+		t.Fatalf("mapping tab did not render configured mapping:\n%s", view)
+	}
+	if !strings.Contains(view, "127.0.0.1:8080") || !strings.Contains(view, "127.0.0.1:8081") {
+		t.Fatalf("mapping endpoints missing:\n%s", view)
+	}
+}
+
+func TestPendingMappingValidation(t *testing.T) {
+	m := Model{
+		activeHost:       Host{Name: "iron"},
+		addMapName:       "HTTP",
+		addMapLocalPort:  "8080",
+		addMapRemoteHost: "127.0.0.1",
+		addMapRemotePort: "8081",
+	}
+	mapping, err := m.pendingMapping()
+	if err != nil {
+		t.Fatalf("pendingMapping returned error: %v", err)
+	}
+	if mapping.Host != "iron" || mapping.LocalPort != 8080 || mapping.RemotePort != 8081 {
+		t.Fatalf("unexpected mapping: %#v", mapping)
 	}
 }
 

@@ -24,7 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const configVersion = 1
+const configVersion = 2
 
 type Host struct {
 	Name   string `json:"name"`
@@ -40,9 +40,19 @@ type VM struct {
 }
 
 type Config struct {
-	Version int    `json:"version"`
-	Hosts   []Host `json:"hosts"`
-	Theme   string `json:"theme,omitempty"`
+	Version  int           `json:"version"`
+	Hosts    []Host        `json:"hosts"`
+	Theme    string        `json:"theme,omitempty"`
+	Mappings []PortMapping `json:"mappings,omitempty"`
+}
+
+type PortMapping struct {
+	ID         string `json:"id"`
+	Host       string `json:"host"`
+	Name       string `json:"name"`
+	LocalPort  int    `json:"local_port"`
+	RemoteHost string `json:"remote_host"`
+	RemotePort int    `json:"remote_port"`
 }
 
 type mode int
@@ -51,9 +61,17 @@ const (
 	modeHosts mode = iota
 	modeAddHost
 	modeVMs
+	modeAddMapping
 	modeTheme
 	modeUpdate
 	modeBusy
+)
+
+const (
+	hostTabVMs = iota
+	hostTabConfig
+	hostTabMappings
+	hostTabCount
 )
 
 type Model struct {
@@ -73,6 +91,8 @@ type Model struct {
 	help        bool
 	hostCursor  int
 	vmCursor    int
+	hostTab     int
+	mapCursor   int
 	themeCursor int
 	vms         []VM
 	activeHost  Host
@@ -81,6 +101,12 @@ type Model struct {
 	addName   string
 	addTarget string
 	addField  int
+
+	addMapName       string
+	addMapLocalPort  string
+	addMapRemoteHost string
+	addMapRemotePort string
+	addMapField      int
 }
 
 type resultMsg struct {
@@ -222,7 +248,9 @@ func (m Model) View() string {
 	case modeAddHost:
 		b.WriteString(m.viewAddHost(innerW, contentH))
 	case modeVMs:
-		b.WriteString(m.viewVMs(innerW, contentH))
+		b.WriteString(m.viewHostDetail(innerW, contentH))
+	case modeAddMapping:
+		b.WriteString(m.viewAddMapping(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeUpdate:
@@ -252,7 +280,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -266,6 +294,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddHostKey(msg)
 	case modeVMs:
 		return m.updateVMKey(msg)
+	case modeAddMapping:
+		return m.updateAddMappingKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
 	case modeUpdate:
@@ -298,6 +328,7 @@ func (m Model) updateHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.config.Hosts) > 0 {
 			removed := m.config.Hosts[m.hostCursor]
 			m.config.Hosts = append(m.config.Hosts[:m.hostCursor], m.config.Hosts[m.hostCursor+1:]...)
+			m.removeHostMappings(removed.Name)
 			if m.hostCursor >= len(m.config.Hosts) && m.hostCursor > 0 {
 				m.hostCursor--
 			}
@@ -324,6 +355,7 @@ func (m Model) updateHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", "r":
 		if h, ok := m.selectedHost(); ok {
+			m.hostTab = hostTabVMs
 			m.status = "Opening " + h.Name + " VM list..."
 			return m.loadVMs(h)
 		}
@@ -389,28 +421,161 @@ func (m Model) updateAddHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateAddMappingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMs
+		m.status = "Cancelled add mapping."
+		m.errText = ""
+	case "tab":
+		m.addMapField = (m.addMapField + 1) % 4
+	case "shift+tab":
+		m.addMapField = (m.addMapField + 3) % 4
+	case "enter":
+		if m.addMapField < 3 {
+			m.addMapField++
+			return m, nil
+		}
+		mapping, err := m.pendingMapping()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		m.config.Mappings = append(m.config.Mappings, mapping)
+		sortMappings(m.config.Mappings)
+		if err := saveConfig(m.configPath, m.config); err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		m.mode = modeVMs
+		m.hostTab = hostTabMappings
+		m.mapCursor = indexMapping(m.hostMappings(), mapping.ID)
+		m.status = "Added mapping " + mapping.Name + ". Press e to start it."
+		m.errText = ""
+	case "backspace", "ctrl+h":
+		switch m.addMapField {
+		case 0:
+			m.addMapName = trimLastRune(m.addMapName)
+		case 1:
+			m.addMapLocalPort = trimLastRune(m.addMapLocalPort)
+		case 2:
+			m.addMapRemoteHost = trimLastRune(m.addMapRemoteHost)
+		case 3:
+			m.addMapRemotePort = trimLastRune(m.addMapRemotePort)
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			text := msg.String()
+			switch m.addMapField {
+			case 0:
+				m.addMapName += text
+			case 1:
+				m.addMapLocalPort += text
+			case 2:
+				m.addMapRemoteHost += text
+			case 3:
+				m.addMapRemotePort += text
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "b", "esc":
 		m.mode = modeHosts
 		m.status = "Back to hosts."
 		m.errText = ""
+	case "left", "[":
+		if m.hostTab > 0 {
+			m.hostTab--
+		}
+	case "right", "]":
+		if m.hostTab < hostTabCount-1 {
+			m.hostTab++
+		}
 	case "up", "k":
-		if m.vmCursor > 0 {
+		if m.hostTab == hostTabMappings {
+			if m.mapCursor > 0 {
+				m.mapCursor--
+			}
+		} else if m.hostTab == hostTabVMs && m.vmCursor > 0 {
 			m.vmCursor--
 		}
 	case "down", "j":
-		if m.vmCursor < len(m.vms)-1 {
+		if m.hostTab == hostTabMappings {
+			if m.mapCursor < len(m.hostMappings())-1 {
+				m.mapCursor++
+			}
+		} else if m.hostTab == hostTabVMs && m.vmCursor < len(m.vms)-1 {
 			m.vmCursor++
 		}
+	case "n":
+		if m.hostTab == hostTabMappings {
+			m.mode = modeAddMapping
+			m.addMapName = ""
+			m.addMapLocalPort = ""
+			m.addMapRemoteHost = "127.0.0.1"
+			m.addMapRemotePort = ""
+			m.addMapField = 0
+			m.status = "Add a local SSH port mapping."
+			m.errText = ""
+		}
 	case "r":
-		return m.loadVMs(m.activeHost)
+		if m.hostTab == hostTabVMs {
+			return m.loadVMs(m.activeHost)
+		}
+		if m.hostTab == hostTabConfig {
+			return m.busy(modeVMs, "Checking "+m.activeHost.Name+"...", "check", func() resultMsg {
+				out, err := checkHost(m.activeHost)
+				return resultMsg{op: "check", output: out, err: err}
+			})
+		}
 	case "s":
 		return m.busy(modeVMs, "Running setup on "+m.activeHost.Name+"...", "setup", func() resultMsg {
 			out, err := setupHost(m.activeHost)
 			return resultMsg{op: "setup", output: out, err: err}
 		})
+	case "d":
+		if m.hostTab == hostTabMappings {
+			mapping, ok := m.selectedMapping()
+			if !ok {
+				return m, nil
+			}
+			_, _ = stopPortMapping(m.activeHost, mapping, m.stateDir)
+			m.removeMapping(mapping.ID)
+			if err := saveConfig(m.configPath, m.config); err != nil {
+				m.errText = err.Error()
+				return m, nil
+			}
+			if m.mapCursor >= len(m.hostMappings()) {
+				m.mapCursor = max(0, len(m.hostMappings())-1)
+			}
+			m.status = "Removed mapping " + mapping.Name + "."
+			m.errText = ""
+		}
+	case "e":
+		if m.hostTab == hostTabMappings {
+			mapping, ok := m.selectedMapping()
+			if !ok {
+				return m, nil
+			}
+			if mappingActive(m.stateDir, m.activeHost.Name, mapping.ID) {
+				return m.busy(modeVMs, "Stopping mapping "+mapping.Name+"...", "mapping-stop", func() resultMsg {
+					out, err := stopPortMapping(m.activeHost, mapping, m.stateDir)
+					return resultMsg{op: "mapping-stop", output: out, err: err}
+				})
+			}
+			return m.busy(modeVMs, "Starting mapping "+mapping.Name+"...", "mapping-start", func() resultMsg {
+				out, err := startPortMapping(m.activeHost, mapping, m.stateDir)
+				return resultMsg{op: "mapping-start", output: out, err: err}
+			})
+		}
 	case "p":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			action := "start"
 			if strings.Contains(strings.ToLower(vm.State), "running") {
@@ -422,6 +587,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "f":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			return m.busy(modeVMs, "Force off "+vm.Name+"...", "destroy", func() resultMsg {
 				out, err := lifecycle(m.activeHost, vm.Name, "destroy")
@@ -429,6 +597,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "o":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			return m.busy(modeVMs, "Opening console for "+vm.Name+"...", "console", func() resultMsg {
 				out, err := openConsole(m.activeHost, vm.Name, m.stateDir)
@@ -436,6 +607,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "x":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			return m.busy(modeVMs, "Stopping console for "+vm.Name+"...", "console-down", func() resultMsg {
 				out, err := closeConsole(m.activeHost, vm.Name, m.stateDir)
@@ -443,6 +617,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "a":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			return m.busy(modeVMs, "Adopting "+vm.Name+"...", "adopt", func() resultMsg {
 				out, err := setOwnership(m.activeHost, vm, false, false)
@@ -450,6 +627,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "h":
+		if m.hostTab != hostTabVMs {
+			return m, nil
+		}
 		if vm, ok := m.selectedVM(); ok {
 			return m.busy(modeVMs, "Toggling shared flag for "+vm.Name+"...", "share", func() resultMsg {
 				out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
@@ -560,6 +740,11 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			m.status = msg.op + " complete."
 		}
 		return m.loadVMs(m.activeHost)
+	case "mapping-start", "mapping-stop":
+		m.status = strings.TrimSpace(msg.output)
+		if m.status == "" {
+			m.status = msg.op + " complete."
+		}
 	default:
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -584,6 +769,10 @@ func failureText(msg resultMsg, m Model) string {
 		return "Console open failed: " + msg.err.Error()
 	case "console-down":
 		return "Console stop failed: " + msg.err.Error()
+	case "mapping-start":
+		return "Mapping start failed: " + msg.err.Error()
+	case "mapping-stop":
+		return "Mapping stop failed: " + msg.err.Error()
 	default:
 		return msg.op + " failed: " + msg.err.Error()
 	}
@@ -623,6 +812,83 @@ func (m Model) selectedVM() (VM, bool) {
 	return m.vms[m.vmCursor], true
 }
 
+func (m Model) hostMappings() []PortMapping {
+	var mappings []PortMapping
+	for _, mapping := range m.config.Mappings {
+		if mapping.Host == m.activeHost.Name {
+			if mapping.RemoteHost == "" {
+				mapping.RemoteHost = "127.0.0.1"
+			}
+			mappings = append(mappings, mapping)
+		}
+	}
+	sortMappings(mappings)
+	return mappings
+}
+
+func (m Model) selectedMapping() (PortMapping, bool) {
+	mappings := m.hostMappings()
+	if len(mappings) == 0 || m.mapCursor < 0 || m.mapCursor >= len(mappings) {
+		return PortMapping{}, false
+	}
+	return mappings[m.mapCursor], true
+}
+
+func (m *Model) removeMapping(id string) {
+	next := m.config.Mappings[:0]
+	for _, mapping := range m.config.Mappings {
+		if mapping.ID != id {
+			next = append(next, mapping)
+		}
+	}
+	m.config.Mappings = next
+}
+
+func (m *Model) removeHostMappings(host string) {
+	next := m.config.Mappings[:0]
+	for _, mapping := range m.config.Mappings {
+		if mapping.Host != host {
+			next = append(next, mapping)
+		}
+	}
+	m.config.Mappings = next
+}
+
+func (m Model) pendingMapping() (PortMapping, error) {
+	name := strings.TrimSpace(m.addMapName)
+	if name == "" || strings.ContainsAny(name, "\r\n\t") {
+		return PortMapping{}, fmt.Errorf("mapping name is required")
+	}
+	localPort, err := parsePort(m.addMapLocalPort)
+	if err != nil {
+		return PortMapping{}, fmt.Errorf("local port: %w", err)
+	}
+	remoteHost := strings.TrimSpace(m.addMapRemoteHost)
+	if remoteHost == "" {
+		remoteHost = "127.0.0.1"
+	}
+	if strings.ContainsAny(remoteHost, "\r\n\t ") {
+		return PortMapping{}, fmt.Errorf("remote host must not contain spaces")
+	}
+	remotePort, err := parsePort(m.addMapRemotePort)
+	if err != nil {
+		return PortMapping{}, fmt.Errorf("remote port: %w", err)
+	}
+	id := hash(fmt.Sprintf("%s-%s-%d-%s-%d-%d", m.activeHost.Name, name, localPort, remoteHost, remotePort, time.Now().UnixNano()))
+	return PortMapping{ID: id, Host: m.activeHost.Name, Name: name, LocalPort: localPort, RemoteHost: remoteHost, RemotePort: remotePort}, nil
+}
+
+func parsePort(text string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0, fmt.Errorf("must be a number")
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("must be between 1 and 65535")
+	}
+	return port, nil
+}
+
 func (m Model) statusLine() string {
 	s := m.styles()
 	if m.errText != "" {
@@ -645,14 +911,13 @@ func firstLine(text string) string {
 func (m Model) viewHosts(width, height int) string {
 	paneW := max(40, width-4)
 	paneH := max(3, height-2)
-	return m.styles().pane.Width(paneW).Height(paneH).Render(m.hostRows(paneW - 4))
+	return m.styles().pane.Width(paneW).Height(paneH).Render(m.hostRows(paneW - 2))
 }
 
 func (m Model) hostRows(width int) string {
 	var b strings.Builder
 	s := m.styles()
 	b.WriteString("Hosts\n\n")
-	b.WriteString(button("Theme: "+m.currentTheme().Name, "m", width) + "\n\n")
 	if len(m.config.Hosts) == 0 {
 		b.WriteString("No hosts configured.\n\nPress a to add the first host.")
 		return b.String()
@@ -680,15 +945,44 @@ func (m Model) viewAddHost(width, height int) string {
 	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render(body)
 }
 
+func (m Model) viewHostDetail(width, height int) string {
+	var b strings.Builder
+	s := m.styles()
+	b.WriteString(fmt.Sprintf("Host: %s  %s\n\n", m.activeHost.Name, s.faint.Render(m.activeHost.Target)))
+	b.WriteString(m.tabLine(width-4) + "\n\n")
+	switch m.hostTab {
+	case hostTabConfig:
+		b.WriteString(m.viewHostConfig(width-4, height-5))
+	case hostTabMappings:
+		b.WriteString(m.viewMappings(width-4, height-5))
+	default:
+		b.WriteString(m.viewVMs(width-4, height-5))
+	}
+	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+func (m Model) tabLine(width int) string {
+	tabs := []string{"VMs", "Config", "Mappings"}
+	parts := make([]string, 0, len(tabs))
+	s := m.styles()
+	for i, tab := range tabs {
+		label := " " + tab + " "
+		if i == m.hostTab {
+			label = s.selected.Render(label)
+		}
+		parts = append(parts, label)
+	}
+	return clipText(strings.Join(parts, " "), width)
+}
+
 func (m Model) viewVMs(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
-	bodyW := max(50, width-8)
+	bodyW := max(50, width)
 	nameW := max(24, bodyW-44)
-	b.WriteString(fmt.Sprintf("Host: %s  %s\n\n", m.activeHost.Name, s.faint.Render(m.activeHost.Target)))
 	if len(m.vms) == 0 {
 		b.WriteString("No VMs found under qemu:///system.")
-		return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(b.String())
+		return b.String()
 	}
 	b.WriteString("  " + cell("VM", nameW) + " " + cell("State", 12) + " " + cell("Owner", 14) + " " + cell("Visibility", 10) + "\n")
 	b.WriteString("  " + strings.Repeat("-", nameW) + " " + strings.Repeat("-", 12) + " " + strings.Repeat("-", 14) + " " + strings.Repeat("-", 10) + "\n")
@@ -707,7 +1001,58 @@ func (m Model) viewVMs(width, height int) string {
 		}
 		b.WriteString(row + "\n")
 	}
-	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
+	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) viewHostConfig(width, height int) string {
+	lines := []string{
+		"Connection",
+		"  Name:   " + m.activeHost.Name,
+		"  Target: " + m.activeHost.Target,
+		"",
+		"Remote",
+		"  Libvirt URI: qemu:///system",
+		"  Ownership:  /var/lib/vmrelay/ownership.tsv",
+		"  Setup:      press s to install/check required packages",
+		"  Check:      press r to run a host readiness check",
+		"",
+		"Local State",
+		"  Config:   " + m.configPath,
+		"  Runtime:  " + m.stateDir,
+		"  Theme:    " + m.config.Theme,
+	}
+	return fitLines(strings.Join(lines, "\n"), width, height)
+}
+
+func (m Model) viewMappings(width, height int) string {
+	var b strings.Builder
+	mappings := m.hostMappings()
+	if len(mappings) == 0 {
+		b.WriteString("No local port mappings configured for this host.\n\nPress n to add one.")
+		return fitLines(b.String(), width, height)
+	}
+	nameW := max(12, min(24, width-52))
+	b.WriteString("  " + cell("Name", nameW) + " " + cell("Local", 16) + " " + cell("Remote", 24) + " " + cell("Status", 8) + "\n")
+	b.WriteString("  " + strings.Repeat("-", nameW) + " " + strings.Repeat("-", 16) + " " + strings.Repeat("-", 24) + " " + strings.Repeat("-", 8) + "\n")
+	s := m.styles()
+	for i, mapping := range mappings {
+		cursor := " "
+		if i == m.mapCursor {
+			cursor = ">"
+		}
+		status := "stopped"
+		if mappingActive(m.stateDir, m.activeHost.Name, mapping.ID) {
+			status = "active"
+		}
+		local := fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort)
+		remote := fmt.Sprintf("%s:%d", mapping.RemoteHost, mapping.RemotePort)
+		row := cursor + " " + cell(mapping.Name, nameW) + " " + cell(local, 16) + " " + cell(remote, 24) + " " + cell(status, 8)
+		if i == m.mapCursor {
+			row = s.selected.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
+	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
 }
 
 func (m Model) viewThemes(width, height int) string {
@@ -747,12 +1092,33 @@ func (m Model) viewBusy(width, height int) string {
 	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render("Working\n\n" + m.status)
 }
 
+func (m Model) viewAddMapping(width, height int) string {
+	cursors := []string{" ", " ", " ", " "}
+	cursors[m.addMapField] = ">"
+	body := fmt.Sprintf("Add Local Mapping for %s\n\n%s Name:        %s\n%s Local port:  %s\n%s Remote host: %s\n%s Remote port: %s\n\nLocal maps bind 127.0.0.1 on this machine and forward over SSH to the remote host.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+		m.activeHost.Name,
+		cursors[0], m.addMapName,
+		cursors[1], m.addMapLocalPort,
+		cursors[2], m.addMapRemoteHost,
+		cursors[3], m.addMapRemotePort)
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) helpText() string {
 	if !m.help {
 		switch m.mode {
 		case modeVMs:
-			return "?: help  m: themes  b: hosts  r: refresh  p: start/shutdown  f: force off  o: open console  x: stop console"
+			switch m.hostTab {
+			case hostTabConfig:
+				return "?: help  m: themes  b: hosts  left/right: tabs  r: check  s: setup  q: quit"
+			case hostTabMappings:
+				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  q: quit"
+			default:
+				return "?: help  m: themes  b: hosts  left/right: tabs  r: refresh  p/f: power  o/x: console  a/h: ownership"
+			}
 		case modeAddHost:
+			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeAddMapping:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
@@ -762,7 +1128,7 @@ func (m Model) helpText() string {
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, m themes, enter view, t test SSH/libvirt, s install/check host packages, d remove. VMs: p start/shutdown, f force off, o open noVNC console, x stop console, a adopt, h share/private, r refresh."
+	return "Hosts: a add, m themes, enter open host, t test, s setup, d remove. Host detail: left/right tabs. VMs: p lifecycle, o console. Mappings: n add, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
@@ -805,7 +1171,7 @@ func (m Model) styles() styles {
 	t := m.currentTheme()
 	return styles{
 		title:    lipgloss.NewStyle().Bold(true).Foreground(t.Text).Background(t.Accent),
-		pane:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Border).Padding(0, 1),
+		pane:     lipgloss.NewStyle().Padding(0, 1),
 		faint:    lipgloss.NewStyle().Foreground(t.Muted),
 		ok:       lipgloss.NewStyle().Foreground(t.OK),
 		err:      lipgloss.NewStyle().Foreground(t.Error),
@@ -876,9 +1242,15 @@ func padLine(line string, width int) string {
 	return line
 }
 
-func button(label, key string, width int) string {
-	text := "[" + key + "] " + label
-	return cell(text, min(max(18, lipgloss.Width(text)), max(18, width)))
+func fitLines(text string, width, height int) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = clipText(line, width)
+	}
+	if height > 0 && len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cell(text string, width int) string {
@@ -950,12 +1322,21 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Version == 0 {
 		cfg.Version = configVersion
 	}
+	for i := range cfg.Mappings {
+		if cfg.Mappings[i].RemoteHost == "" {
+			cfg.Mappings[i].RemoteHost = "127.0.0.1"
+		}
+		if cfg.Mappings[i].ID == "" {
+			cfg.Mappings[i].ID = hash(fmt.Sprintf("%s-%s-%d-%s-%d", cfg.Mappings[i].Host, cfg.Mappings[i].Name, cfg.Mappings[i].LocalPort, cfg.Mappings[i].RemoteHost, cfg.Mappings[i].RemotePort))
+		}
+	}
 	return cfg, nil
 }
 
 func saveConfig(path string, cfg Config) error {
 	cfg.Version = configVersion
 	sortHosts(cfg.Hosts)
+	sortMappings(cfg.Mappings)
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -1021,9 +1402,30 @@ func sortHosts(hosts []Host) {
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Name < hosts[j].Name })
 }
 
+func sortMappings(mappings []PortMapping) {
+	sort.SliceStable(mappings, func(i, j int) bool {
+		if mappings[i].Host != mappings[j].Host {
+			return mappings[i].Host < mappings[j].Host
+		}
+		if mappings[i].Name != mappings[j].Name {
+			return mappings[i].Name < mappings[j].Name
+		}
+		return mappings[i].LocalPort < mappings[j].LocalPort
+	})
+}
+
 func indexHost(hosts []Host, name string) int {
 	for i, h := range hosts {
 		if h.Name == name {
+			return i
+		}
+	}
+	return 0
+}
+
+func indexMapping(mappings []PortMapping, id string) int {
+	for i, mapping := range mappings {
+		if mapping.ID == id {
 			return i
 		}
 	}
@@ -1295,6 +1697,50 @@ fi
 	return strings.TrimSpace(strings.Join(lines, "\n")), err
 }
 
+func startPortMapping(h Host, mapping PortMapping, stateDir string) (string, error) {
+	if mapping.LocalPort == 0 || mapping.RemotePort == 0 {
+		return "", fmt.Errorf("mapping ports are not configured")
+	}
+	if mapping.RemoteHost == "" {
+		mapping.RemoteHost = "127.0.0.1"
+	}
+	if !portFree(mapping.LocalPort) {
+		return "", fmt.Errorf("local port %d is already in use", mapping.LocalPort)
+	}
+	ctl := mappingControlPath(stateDir, h.Name, mapping.ID)
+	_ = os.Remove(ctl)
+	args := []string{
+		"-f", "-N", "-M", "-S", ctl,
+		"-o", "BatchMode=yes",
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ControlPersist=yes",
+		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%d", mapping.LocalPort, mapping.RemoteHost, mapping.RemotePort),
+		h.Target,
+	}
+	if out, err := runCommand(20*time.Second, "ssh", args...); err != nil {
+		return strings.TrimSpace(out), fmt.Errorf("failed to start SSH mapping tunnel: %w", err)
+	}
+	return fmt.Sprintf("Started %s: 127.0.0.1:%d -> %s:%d.", mapping.Name, mapping.LocalPort, mapping.RemoteHost, mapping.RemotePort), nil
+}
+
+func stopPortMapping(h Host, mapping PortMapping, stateDir string) (string, error) {
+	ctl := mappingControlPath(stateDir, h.Name, mapping.ID)
+	if _, err := os.Stat(ctl); errors.Is(err, os.ErrNotExist) {
+		return "Mapping " + mapping.Name + " is not running.", nil
+	}
+	out, err := runCommand(10*time.Second, "ssh", "-S", ctl, "-O", "exit", h.Target)
+	_ = os.Remove(ctl)
+	if err != nil {
+		return strings.TrimSpace(out), err
+	}
+	return "Stopped mapping " + mapping.Name + ".", nil
+}
+
+func mappingActive(stateDir, host, id string) bool {
+	_, err := os.Stat(mappingControlPath(stateDir, host, id))
+	return err == nil
+}
+
 type consoleState struct {
 	Host       string `json:"host"`
 	Target     string `json:"target"`
@@ -1327,6 +1773,10 @@ func consoleControlPath(stateDir, host, vm string) string {
 
 func consoleStatePath(stateDir, host, vm string) string {
 	return filepath.Join(stateDir, "console-"+hash(host+"-"+vm)+".json")
+}
+
+func mappingControlPath(stateDir, host, id string) string {
+	return filepath.Join(stateDir, "mapping-"+hash(host+"-"+id)+".ctl")
 }
 
 func stablePort(key string, base, span int) int {
