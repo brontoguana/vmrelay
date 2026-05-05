@@ -90,6 +90,7 @@ const (
 	modeVMDetail
 	modeAddMapping
 	modeCreateVM
+	modeISOPicker
 	modeAddDisk
 	modeImportDisk
 	modeAddNIC
@@ -111,6 +112,19 @@ const (
 	vmTabNICs
 	vmTabActions
 	vmTabCount
+)
+
+const (
+	createVMFieldName = iota
+	createVMFieldMemory
+	createVMFieldCPUs
+	createVMFieldDiskSize
+	createVMFieldDiskBus
+	createVMFieldISO
+	createVMFieldNetwork
+	createVMFieldFirmware
+	createVMFieldShared
+	createVMFieldCount
 )
 
 type Model struct {
@@ -135,6 +149,7 @@ type Model struct {
 	mapCursor   int
 	diskCursor  int
 	nicCursor   int
+	isoCursor   int
 	themeCursor int
 	vms         []VM
 	vmDetail    VMDetail
@@ -161,6 +176,8 @@ type Model struct {
 	createVMFirmware string
 	createVMShared   string
 	createVMField    int
+	isoDir           string
+	isoEntries       []remoteEntry
 
 	addDiskPath   string
 	addDiskSize   string
@@ -182,12 +199,20 @@ type resultMsg struct {
 	output string
 	vms    []VM
 	detail VMDetail
+	dir    string
+	files  []remoteEntry
 	err    error
 }
 
 type updateInfo struct {
 	Latest string
 	URL    string
+}
+
+type remoteEntry struct {
+	Name string
+	Path string
+	Dir  bool
 }
 
 type updateCheckMsg struct {
@@ -324,6 +349,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewAddMapping(innerW, contentH))
 	case modeCreateVM:
 		b.WriteString(m.viewCreateVM(innerW, contentH))
+	case modeISOPicker:
+		b.WriteString(m.viewISOPicker(innerW, contentH))
 	case modeAddDisk:
 		b.WriteString(m.viewAddDisk(innerW, contentH))
 	case modeImportDisk:
@@ -359,7 +386,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -379,6 +406,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddMappingKey(msg)
 	case modeCreateVM:
 		return m.updateCreateVMKey(msg)
+	case modeISOPicker:
+		return m.updateISOPickerKey(msg)
 	case modeAddDisk:
 		return m.updateAddDiskKey(msg)
 	case modeImportDisk:
@@ -576,12 +605,27 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeVMs
 		m.status = "Cancelled VM creation."
 		m.errText = ""
+	case "up", "k":
+		if m.createVMField > 0 {
+			m.createVMField--
+		}
+	case "down", "j":
+		if m.createVMField < createVMFieldCount-1 {
+			m.createVMField++
+		}
 	case "tab":
-		m.createVMField = (m.createVMField + 1) % 9
+		m.createVMField = (m.createVMField + 1) % createVMFieldCount
 	case "shift+tab":
-		m.createVMField = (m.createVMField + 8) % 9
+		m.createVMField = (m.createVMField + createVMFieldCount - 1) % createVMFieldCount
+	case "left":
+		m.cycleCreateVMField(-1)
+	case "right":
+		m.cycleCreateVMField(1)
 	case "enter":
-		if m.createVMField < 8 {
+		if m.createVMField == createVMFieldISO {
+			return m.loadISODir(m.isoStartDir())
+		}
+		if m.createVMField < createVMFieldCount-1 {
 			m.createVMField++
 			return m, nil
 		}
@@ -595,6 +639,9 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return resultMsg{op: "vm-create", output: out, err: err}
 		})
 	case "backspace", "ctrl+h":
+		if !createVMFieldEditable(m.createVMField) {
+			return m, nil
+		}
 		switch m.createVMField {
 		case 0:
 			m.createVMName = trimLastRune(m.createVMName)
@@ -616,7 +663,7 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.createVMShared = trimLastRune(m.createVMShared)
 		}
 	default:
-		if msg.Type == tea.KeyRunes {
+		if msg.Type == tea.KeyRunes && createVMFieldEditable(m.createVMField) {
 			switch m.createVMField {
 			case 0:
 				m.createVMName += msg.String()
@@ -638,6 +685,38 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.createVMShared += msg.String()
 			}
 		}
+	}
+	return m, nil
+}
+
+func (m Model) updateISOPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeCreateVM
+		m.status = "Returned to VM creation."
+		m.errText = ""
+	case "up", "k":
+		if m.isoCursor > 0 {
+			m.isoCursor--
+		}
+	case "down", "j":
+		if m.isoCursor < len(m.isoEntries)-1 {
+			m.isoCursor++
+		}
+	case "left", "h", "backspace", "ctrl+h":
+		return m.loadISODir(parentDir(m.isoDir))
+	case "enter", "right", "l":
+		if len(m.isoEntries) == 0 || m.isoCursor < 0 || m.isoCursor >= len(m.isoEntries) {
+			return m, nil
+		}
+		entry := m.isoEntries[m.isoCursor]
+		if entry.Dir {
+			return m.loadISODir(entry.Path)
+		}
+		m.createVMISO = entry.Path
+		m.mode = modeCreateVM
+		m.status = "Selected ISO " + entry.Path + "."
+		m.errText = ""
 	}
 	return m, nil
 }
@@ -819,14 +898,95 @@ func (m Model) beginCreateVM() Model {
 	m.createVMCPUs = "2"
 	m.createVMDiskSize = "64"
 	m.createVMDiskBus = "sata"
-	m.createVMISO = ""
+	m.createVMISO = "/var/lib/libvirt/boot/"
 	m.createVMNetwork = "default"
 	m.createVMFirmware = "uefi"
-	m.createVMShared = "n"
+	m.createVMShared = "no"
 	m.createVMField = 0
+	m.isoDir = "/var/lib/libvirt/boot"
+	m.isoEntries = nil
+	m.isoCursor = 0
 	m.status = "Create a new VM from a remote ISO."
 	m.errText = ""
 	return m
+}
+
+var (
+	createVMMemoryChoices   = []string{"1", "2", "4", "8", "16", "32", "64", "128"}
+	createVMCPUChoices      = []string{"1", "2", "4", "6", "8", "12", "16", "24", "32"}
+	createVMDiskChoices     = []string{"20", "32", "64", "128", "256", "512", "1024"}
+	createVMDiskBusChoices  = []string{"sata", "virtio", "scsi", "ide"}
+	createVMNetworkChoices  = []string{"default"}
+	createVMFirmwareChoices = []string{"uefi", "bios"}
+	createVMSharedChoices   = []string{"no", "yes"}
+)
+
+func createVMFieldEditable(field int) bool {
+	switch field {
+	case createVMFieldName, createVMFieldMemory, createVMFieldCPUs, createVMFieldDiskSize, createVMFieldISO, createVMFieldNetwork:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Model) cycleCreateVMField(delta int) {
+	switch m.createVMField {
+	case createVMFieldMemory:
+		m.createVMMemory = cycleChoice(m.createVMMemory, createVMMemoryChoices, delta)
+	case createVMFieldCPUs:
+		m.createVMCPUs = cycleChoice(m.createVMCPUs, createVMCPUChoices, delta)
+	case createVMFieldDiskSize:
+		m.createVMDiskSize = cycleChoice(m.createVMDiskSize, createVMDiskChoices, delta)
+	case createVMFieldDiskBus:
+		m.createVMDiskBus = cycleChoice(m.createVMDiskBus, createVMDiskBusChoices, delta)
+	case createVMFieldNetwork:
+		m.createVMNetwork = cycleChoice(m.createVMNetwork, createVMNetworkChoices, delta)
+	case createVMFieldFirmware:
+		m.createVMFirmware = cycleChoice(m.createVMFirmware, createVMFirmwareChoices, delta)
+	case createVMFieldShared:
+		m.createVMShared = cycleChoice(m.createVMShared, createVMSharedChoices, delta)
+	}
+}
+
+func cycleChoice(current string, choices []string, delta int) string {
+	if len(choices) == 0 {
+		return current
+	}
+	current = strings.TrimSpace(strings.ToLower(current))
+	idx := -1
+	for i, choice := range choices {
+		if strings.EqualFold(choice, current) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		if delta < 0 {
+			return choices[len(choices)-1]
+		}
+		return choices[0]
+	}
+	idx = (idx + delta) % len(choices)
+	if idx < 0 {
+		idx += len(choices)
+	}
+	return choices[idx]
+}
+
+func (m Model) isoStartDir() string {
+	path := strings.TrimSpace(m.createVMISO)
+	if path == "" {
+		return "/var/lib/libvirt/boot"
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
+	}
+	if strings.EqualFold(filepath.Ext(path), ".iso") {
+		return parentDir(path)
+	}
+	return path
 }
 
 func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1216,6 +1376,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
 		}
 		m.status = "Loaded " + m.vmDetail.VM.Name + "."
+	case "iso-list":
+		m.isoDir = msg.dir
+		m.isoEntries = msg.files
+		if m.isoCursor >= len(m.isoEntries) {
+			m.isoCursor = max(0, len(m.isoEntries)-1)
+		}
+		m.status = fmt.Sprintf("Browsing %s. Select a directory or ISO.", m.isoDir)
 	case "start", "shutdown", "destroy", "adopt", "share":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1261,6 +1428,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Failed to open host: " + msg.err.Error()
 	case "vm-detail":
 		return "Failed to load VM detail: " + msg.err.Error()
+	case "iso-list":
+		return "ISO browser failed: " + msg.err.Error()
 	case "check":
 		return "Host check failed: " + msg.err.Error()
 	case "setup":
@@ -1322,6 +1491,21 @@ func (m Model) loadVMDetail(h Host, vm VM) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		detail, out, err := getVMDetail(h, vm)
 		return resultMsg{op: "vm-detail", output: out, detail: detail, err: err}
+	}
+}
+
+func (m Model) loadISODir(dir string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(dir) == "" {
+		dir = "/var/lib/libvirt/boot"
+	}
+	m.priorMode = modeISOPicker
+	m.mode = modeBusy
+	m.isoDir = dir
+	m.status = "Browsing remote ISO directory " + dir + "..."
+	m.errText = ""
+	return m, func() tea.Msg {
+		entries, out, err := listRemoteISOEntries(m.activeHost, dir)
+		return resultMsg{op: "iso-list", output: out, dir: dir, files: entries, err: err}
 	}
 }
 
@@ -1448,6 +1632,9 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 	iso := strings.TrimSpace(m.createVMISO)
 	if err := validateRequiredAbsPath(iso, "ISO path"); err != nil {
 		return vmCreateRequest{}, err
+	}
+	if strings.HasSuffix(iso, "/") || !strings.EqualFold(filepath.Ext(iso), ".iso") {
+		return vmCreateRequest{}, fmt.Errorf("ISO path must point to an .iso file; press Enter on the ISO field to browse")
 	}
 	network := strings.TrimSpace(m.createVMNetwork)
 	if network == "" {
@@ -1874,20 +2061,56 @@ func (m Model) viewHostConfig(width, height int) string {
 }
 
 func (m Model) viewCreateVM(width, height int) string {
-	cursors := []string{" ", " ", " ", " ", " ", " ", " ", " ", " "}
+	cursors := make([]string, createVMFieldCount)
+	for i := range cursors {
+		cursors[i] = " "
+	}
 	cursors[m.createVMField] = ">"
-	body := fmt.Sprintf("Create VM on %s\n\n%s Name:      %s\n%s Memory GiB:%s\n%s CPUs:      %s\n%s Disk GiB:  %s\n%s Disk bus:  %s\n%s ISO path:  %s\n%s Network:   %s\n%s Firmware:  %s\n%s Shared:    %s\n\nISO path is on the remote host. Disk bus can be sata, virtio, scsi, or ide; sata is safest for Windows installers. Firmware is uefi or bios. Shared is y/n.\nVMRelay creates /var/lib/libvirt/images/<name>.qcow2, starts a VNC install VM, and records ownership for the remote SSH user.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+	body := fmt.Sprintf("Create VM on %s\n\n%s Name:       %s\n%s Memory GiB: %s\n%s CPUs:       %s\n%s Disk GiB:   %s\n%s Disk bus:   %s\n%s ISO path:   %s\n%s Network:    %s\n%s Firmware:   %s\n%s Shared:     %s\n\nUp/down moves fields. Left/right changes preset fields. Enter on ISO path opens a remote directory picker; Enter on the final field creates the VM.\nDisk bus: sata is safest for Windows installers; virtio/scsi are better for prepared Linux or driver-ready Windows guests.\nVMRelay creates /var/lib/libvirt/images/<name>.qcow2, starts a VNC install VM, and records ownership for the remote SSH user.",
 		m.activeHost.Name,
-		cursors[0], m.createVMName,
-		cursors[1], m.createVMMemory,
-		cursors[2], m.createVMCPUs,
-		cursors[3], m.createVMDiskSize,
-		cursors[4], m.createVMDiskBus,
-		cursors[5], m.createVMISO,
-		cursors[6], m.createVMNetwork,
-		cursors[7], m.createVMFirmware,
-		cursors[8], m.createVMShared)
+		cursors[createVMFieldName], m.createVMName,
+		cursors[createVMFieldMemory], m.createVMMemory,
+		cursors[createVMFieldCPUs], m.createVMCPUs,
+		cursors[createVMFieldDiskSize], m.createVMDiskSize,
+		cursors[createVMFieldDiskBus], m.createVMDiskBus,
+		cursors[createVMFieldISO], m.createVMISO,
+		cursors[createVMFieldNetwork], m.createVMNetwork,
+		cursors[createVMFieldFirmware], strings.ToUpper(m.createVMFirmware),
+		cursors[createVMFieldShared], sharedChoiceLabel(m.createVMShared))
 	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
+func (m Model) viewISOPicker(width, height int) string {
+	var b strings.Builder
+	s := m.styles()
+	b.WriteString("Select ISO on " + m.activeHost.Name + "\n")
+	b.WriteString(s.faint.Render(m.isoDir) + "\n\n")
+	if len(m.isoEntries) == 0 {
+		b.WriteString("No directories or .iso files found here.\n\nLeft/backspace moves to the parent directory. Esc returns to the create form.")
+		return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(b.String(), width-6, height-4))
+	}
+	nameW := max(20, width-20)
+	for i, entry := range m.isoEntries {
+		cursor := " "
+		if i == m.isoCursor {
+			cursor = ">"
+		}
+		kind := "iso"
+		name := entry.Name
+		if entry.Dir {
+			kind = "dir"
+			if name != ".." {
+				name += "/"
+			}
+		}
+		line := cursor + " " + cell(name, nameW) + " " + kind
+		if i == m.isoCursor {
+			line = s.selected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\nEnter/right opens a directory or selects an ISO. Left/backspace goes up. Esc returns.")
+	return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.TrimRight(b.String(), "\n"), width-6, height-4))
 }
 
 func (m Model) viewMappings(width, height int) string {
@@ -2035,7 +2258,9 @@ func (m Model) helpText() string {
 		case modeAddMapping:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeCreateVM:
-			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+			return "up/down: fields  left/right: presets  enter: next/browse/create  tab: next  esc: cancel"
+		case modeISOPicker:
+			return "up/down: browse  enter/right: open/select  left/backspace: parent  esc: form"
 		case modeAddDisk:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeImportDisk:
@@ -2065,6 +2290,15 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func sharedChoiceLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "yes", "y", "true", "1", "shared":
+		return "Yes - shared"
+	default:
+		return "No - private"
+	}
 }
 
 func (m Model) size() (int, int) {
@@ -2548,6 +2782,72 @@ func parseVMDetailOutput(out string) VMDetail {
 		}
 	}
 	return detail
+}
+
+func listRemoteISOEntries(h Host, dir string) ([]remoteEntry, string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = "/var/lib/libvirt/boot"
+	}
+	if !strings.HasPrefix(dir, "/") {
+		return nil, "", fmt.Errorf("directory must be an absolute remote path")
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+dir=%s
+[ -d "$dir" ] || { echo "Directory does not exist: $dir" >&2; exit 1; }
+printf 'VMRELAY_ISO_DIR\t%%s\n' "$dir"
+find "$dir" -maxdepth 1 -mindepth 1 \( -type d -o -type f \) -printf '%%f\t%%y\t%%p\n' 2>/dev/null | sort -f | while IFS="$(printf '\t')" read -r name type path; do
+  case "$type:$name" in
+    d:*) printf 'VMRELAY_ISO_ENTRY\t%%s\tdir\t%%s\n' "$name" "$path" ;;
+    f:*.[iI][sS][oO]) printf 'VMRELAY_ISO_ENTRY\t%%s\tfile\t%%s\n' "$name" "$path" ;;
+  esac
+done || true
+`, shellQuote(dir))
+	out, err := ssh(h.Target, script, 20*time.Second)
+	if err != nil {
+		return nil, out, err
+	}
+	return parseRemoteISOEntries(out), out, nil
+}
+
+func parseRemoteISOEntries(out string) []remoteEntry {
+	var entries []remoteEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 4 || parts[0] != "VMRELAY_ISO_ENTRY" {
+			continue
+		}
+		entries = append(entries, remoteEntry{Name: parts[1], Dir: parts[2] == "dir", Path: parts[3]})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Dir != entries[j].Dir {
+			return entries[i].Dir
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	if parent := parentDirFromOutput(out); parent != "" {
+		entries = append([]remoteEntry{{Name: "..", Path: parent, Dir: true}}, entries...)
+	}
+	return entries
+}
+
+func parentDirFromOutput(out string) string {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) >= 2 && parts[0] == "VMRELAY_ISO_DIR" {
+			return parentDir(parts[1])
+		}
+	}
+	return ""
+}
+
+func parentDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		return "/"
+	}
+	return filepath.Dir(strings.TrimRight(path, "/"))
 }
 
 func lifecycle(h Host, vmName, action string) (string, error) {

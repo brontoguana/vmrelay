@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.12 - 2026-05-05
+
+- Improved the create-VM wizard with up/down field navigation, left/right preset cycling for memory, CPUs, disk size, disk bus, firmware, and shared/private choices.
+- Changed the shared field from free text to a Yes/No selection, rendering as `Yes - shared` or `No - private`.
+- Added a remote ISO picker opened from the ISO path field, starting at `/var/lib/libvirt/boot/` and listing directories plus `.iso` files from the selected SSH host.
+- Verified the ISO picker listing behavior against `iron` and fixed the empty-directory case so `/var/lib/libvirt/boot/` can open even before any ISO files are present.
+- Added focused tests for create wizard keyboard behavior, constrained fields, ISO picker parsing/rendering, and ISO selection.
+
 ## 0.2.11 - 2026-05-05
 
 - Made VM creation discoverable from the host VMs tab: `n` now opens the create-VM form from either VMs or Config, the VMs footer advertises the shortcut, and the empty VM list shows a create hint.

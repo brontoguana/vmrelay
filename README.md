@@ -32,7 +32,7 @@ Inside the TUI:
 4. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
 5. Press `Enter` to open the selected host detail screen.
 6. Use `left`/`right` to switch between VMs, Config, and Mappings.
-7. In VMs, press `n` to create a new VM from a remote ISO path.
+7. In VMs, press `n` to create a new VM from a remote ISO path; use up/down to move fields, left/right to cycle preset values, and press `Enter` on the ISO field to browse remote directories and `.iso` files.
 8. Select a VM and press `Enter` to open its VM detail screen.
 9. In VM detail, use Summary, Disks, NICs, and Actions tabs.
 10. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, `enter` to make the selected disk first in boot order, or `x` to detach the selected disk.
@@ -47,7 +47,7 @@ Inside the TUI:
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts.
 - Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
-- VM creation from the host VMs or Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user.
+- VM creation from the host VMs or Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, and a read-only remote ISO picker rooted initially at `/var/lib/libvirt/boot/`.
 - VM inventory shows state plus VMRelay ownership status.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
 - VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.

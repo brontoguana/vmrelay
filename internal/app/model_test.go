@@ -274,7 +274,7 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 		createVMShared:   "n",
 	}
 	view := stripANSI(m.viewCreateVM(100, 20))
-	if !strings.Contains(view, "Create VM on iron") || !strings.Contains(view, "windows.iso") || !strings.Contains(view, "Disk bus") || !strings.Contains(view, "Firmware") {
+	if !strings.Contains(view, "Create VM on iron") || !strings.Contains(view, "windows.iso") || !strings.Contains(view, "Disk bus") || !strings.Contains(view, "Firmware") || !strings.Contains(view, "No - private") {
 		t.Fatalf("create VM form missing expected content:\n%s", view)
 	}
 	req, err := m.pendingVMCreate()
@@ -296,6 +296,114 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	}
 }
 
+func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
+	m := Model{
+		config:           Config{Theme: "Classic"},
+		mode:             modeCreateVM,
+		activeHost:       Host{Name: "iron"},
+		createVMName:     "win10",
+		createVMMemory:   "4",
+		createVMCPUs:     "2",
+		createVMDiskSize: "64",
+		createVMDiskBus:  "sata",
+		createVMISO:      "/var/lib/libvirt/boot/windows.iso",
+		createVMNetwork:  "default",
+		createVMFirmware: "uefi",
+		createVMShared:   "no",
+	}
+	updated, _ := m.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyDown})
+	next := updated.(Model)
+	if next.createVMField != createVMFieldMemory {
+		t.Fatalf("down should move to memory field, got %d", next.createVMField)
+	}
+	updated, _ = next.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyRight})
+	next = updated.(Model)
+	if next.createVMMemory != "8" {
+		t.Fatalf("right should cycle memory preset to 8, got %q", next.createVMMemory)
+	}
+	next.createVMField = createVMFieldDiskBus
+	updated, _ = next.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyLeft})
+	next = updated.(Model)
+	if next.createVMDiskBus != "ide" {
+		t.Fatalf("left should cycle disk bus to previous option, got %q", next.createVMDiskBus)
+	}
+	next.createVMField = createVMFieldShared
+	updated, _ = next.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyRight})
+	next = updated.(Model)
+	if next.createVMShared != "yes" || sharedChoiceLabel(next.createVMShared) != "Yes - shared" {
+		t.Fatalf("right should cycle shared to yes, got %q", next.createVMShared)
+	}
+	updated, _ = next.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	next = updated.(Model)
+	if next.createVMShared != "yes" {
+		t.Fatalf("shared field should not accept typed text, got %q", next.createVMShared)
+	}
+	next.createVMField = createVMFieldName
+	updated, _ = next.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	next = updated.(Model)
+	if !strings.HasSuffix(next.createVMName, "h") {
+		t.Fatalf("text fields should still accept h/l characters, got name %q", next.createVMName)
+	}
+}
+
+func TestISOEntryParsingAndPickerRendering(t *testing.T) {
+	out := strings.Join([]string{
+		"VMRELAY_ISO_DIR\t/var/lib/libvirt/boot",
+		"VMRELAY_ISO_ENTRY\tubuntu.iso\tfile\t/var/lib/libvirt/boot/ubuntu.iso",
+		"VMRELAY_ISO_ENTRY\twindows.iso\tfile\t/var/lib/libvirt/boot/windows.iso",
+		"VMRELAY_ISO_ENTRY\told\tdir\t/var/lib/libvirt/boot/old",
+		"ignored diagnostic",
+	}, "\n")
+	entries := parseRemoteISOEntries(out)
+	if len(entries) != 4 {
+		t.Fatalf("expected parent, directory, and two ISO entries, got %#v", entries)
+	}
+	if entries[0].Name != ".." || !entries[0].Dir || entries[0].Path != "/var/lib/libvirt" {
+		t.Fatalf("unexpected parent entry: %#v", entries[0])
+	}
+	if entries[1].Name != "old" || !entries[1].Dir {
+		t.Fatalf("directories should sort before ISO files: %#v", entries)
+	}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeISOPicker,
+		activeHost: Host{Name: "iron"},
+		isoDir:     "/var/lib/libvirt/boot",
+		isoEntries: entries,
+		isoCursor:  2,
+	}
+	view := stripANSI(m.viewISOPicker(100, 20))
+	if !strings.Contains(view, "Select ISO on iron") || !strings.Contains(view, "ubuntu.iso") || !strings.Contains(view, "old/") {
+		t.Fatalf("ISO picker missing expected entries:\n%s", view)
+	}
+	updated, cmd := m.updateISOPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("selecting an ISO should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeCreateVM || next.createVMISO != "/var/lib/libvirt/boot/ubuntu.iso" {
+		t.Fatalf("ISO selection did not return to create form with selected ISO: %#v", next)
+	}
+}
+
+func TestEnterOnISOFieldStartsRemotePicker(t *testing.T) {
+	m := Model{
+		config:      Config{Theme: "Classic"},
+		mode:        modeCreateVM,
+		activeHost:  Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		createVMISO: "/var/lib/libvirt/boot/",
+	}
+	m.createVMField = createVMFieldISO
+	updated, cmd := m.updateCreateVMKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on ISO field should start remote directory loading")
+	}
+	next := updated.(Model)
+	if next.mode != modeBusy || next.priorMode != modeISOPicker || next.isoDir != "/var/lib/libvirt/boot" {
+		t.Fatalf("unexpected state after opening ISO picker: %#v", next)
+	}
+}
+
 func TestVMTabCanOpenCreateVM(t *testing.T) {
 	m := Model{
 		config:     Config{Theme: "Classic"},
@@ -308,7 +416,7 @@ func TestVMTabCanOpenCreateVM(t *testing.T) {
 		t.Fatal("expected no command when opening create form")
 	}
 	next := updated.(Model)
-	if next.mode != modeCreateVM || next.createVMFirmware != "uefi" || next.createVMDiskBus != "sata" {
+	if next.mode != modeCreateVM || next.createVMFirmware != "uefi" || next.createVMDiskBus != "sata" || next.createVMISO != "/var/lib/libvirt/boot/" {
 		t.Fatalf("n on VM tab did not open create form with defaults: %#v", next)
 	}
 	if !strings.Contains(stripANSI(m.helpText()), "n: create VM") {
