@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.25 - 2026-05-05
+
+- Changed new VM networking to default to an `e1000e` NIC on the selected libvirt NAT network instead of `virtio`, so stock Windows installers have a usable network adapter without virtio drivers.
+- Changed manual NIC attach defaults and help text to use `e1000e` for the same Windows-compatible behavior.
+- Changed UEFI VM creation to request Q35, Secure Boot with enrolled keys, and TPM 2.0 through `virt-install`; host setup/readiness now includes `swtpm` and Secure Boot-capable OVMF checks.
+- Changed host setup to define/start/autostart the libvirt `default` NAT network when needed, and VM creation now starts an inactive selected network or reports a setup-focused error.
+- Repaired `Win10-Orig` and `Win11-Orig` on `iron` by adding Windows-compatible NAT NICs; regenerated `Win11-Orig` as a Q35 Secure Boot/TPM VM and restarted it with reset NVRAM.
+
 ## 0.2.24 - 2026-05-05
 
 - Fixed Windows installer VM creation more robustly by rewriting the created domain XML to use device-level CDROM boot order `1` and disk boot order `2`, instead of relying on generic `<os><boot dev='cdrom'/>` entries from `virt-install`.

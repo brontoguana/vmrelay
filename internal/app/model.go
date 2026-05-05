@@ -1101,7 +1101,7 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case vmTabNICs:
 			m.mode = modeAddNIC
 			m.addNICSource = "default"
-			m.addNICModel = "virtio"
+			m.addNICModel = "e1000e"
 			m.addNICField = 0
 			m.status = "Attach a network interface."
 			m.errText = ""
@@ -2309,7 +2309,7 @@ func (m Model) viewAddNIC(width, height int) string {
 	} else {
 		modelCursor = ">"
 	}
-	body := fmt.Sprintf("Attach NIC to %s\n\n%s Network: %s\n%s Model:   %s\n\nNetwork is a libvirt network name, usually default. Model defaults to virtio.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+	body := fmt.Sprintf("Attach NIC to %s\n\n%s Network: %s\n%s Model:   %s\n\nNetwork is a libvirt network name, usually default. Model defaults to e1000e.\nEnter moves/saves. Tab switches fields. Esc cancels.",
 		m.vmDetail.VM.Name,
 		sourceCursor, m.addNICSource,
 		modelCursor, m.addNICModel)
@@ -2837,9 +2837,23 @@ command -v virt-install >/dev/null && printf 'virt-install: yes\n' || printf 'vi
 command -v virt-clone >/dev/null && printf 'virt-clone: yes\n' || printf 'virt-clone: missing\n'
 command -v qemu-img >/dev/null && printf 'qemu-img: yes\n' || printf 'qemu-img: missing\n'
 command -v python3 >/dev/null && printf 'python3: yes\n' || printf 'python3: missing\n'
+command -v swtpm >/dev/null && printf 'swtpm: yes\n' || printf 'swtpm: missing\n'
 if [ -d /usr/share/OVMF ] || [ -d /usr/share/ovmf ] || [ -e /usr/share/qemu/OVMF.fd ]; then printf 'OVMF/UEFI: yes\n'; else printf 'OVMF/UEFI: missing\n'; fi
+if virsh -c qemu:///system domcapabilities --machine q35 2>/dev/null | awk '/<loader / { in_loader=1 } in_loader && /<value>.*OVMF.*(ms|secboot).*<\/value>/ { has_loader=1 } in_loader && /<value>yes<\/value>/ { has_secure=1 } /<\/loader>/ { in_loader=0 } END { exit(has_loader && has_secure ? 0 : 1) }'; then
+  printf 'Secure Boot OVMF: yes\n'
+else
+  printf 'Secure Boot OVMF: missing\n'
+fi
 command -v websockify >/dev/null && printf 'websockify: yes\n' || printf 'websockify: missing\n'
 [ -d /usr/share/novnc ] && printf 'noVNC: yes\n' || printf 'noVNC: missing\n'
+default_net_state="$(virsh -c qemu:///system net-info default 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' || true)"
+if [ "$default_net_state" = "yes" ]; then
+  printf 'Default NAT network: yes\n'
+elif [ -n "$default_net_state" ]; then
+  printf 'Default NAT network: inactive\n'
+else
+  printf 'Default NAT network: missing\n'
+fi
 vmrelay_pool_state="$(virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' || true)"
 if [ "$vmrelay_pool_state" = "running" ]; then
   vmrelay_pool_target="$(virsh -c qemu:///system pool-dumpxml vmrelay 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1)"
@@ -2860,9 +2874,9 @@ func setupHost(h Host) (string, error) {
 set -euo pipefail
 if command -v apt-get >/dev/null 2>&1; then
   sudo -n apt-get update
-  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf novnc websockify python3
+  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf swtpm novnc websockify python3
 else
-  echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/novnc/websockify/python3 manually."
+  echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/ovmf/swtpm/novnc/websockify/python3 manually."
 fi
 group=libvirt
 if ! getent group "$group" >/dev/null 2>&1; then group=libvirt-qemu; fi
@@ -2870,6 +2884,25 @@ sudo -n install -d -m 2775 -o root -g "$group" /var/lib/vmrelay /var/lib/vmrelay
 sudo -n touch /var/lib/vmrelay/ownership.tsv
 sudo -n chown root:"$group" /var/lib/vmrelay/ownership.tsv
 sudo -n chmod 0664 /var/lib/vmrelay/ownership.tsv
+if ! sudo -n virsh -c qemu:///system net-info default >/dev/null 2>&1; then
+  tmp_net="$(mktemp)"
+  cat >"$tmp_net" <<'NETXML'
+<network>
+  <name>default</name>
+  <forward mode="nat"/>
+  <bridge name="virbr0" stp="on" delay="0"/>
+  <ip address="192.168.122.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.122.2" end="192.168.122.254"/>
+    </dhcp>
+  </ip>
+</network>
+NETXML
+  sudo -n virsh -c qemu:///system net-define "$tmp_net" >/dev/null
+  rm -f "$tmp_net"
+fi
+sudo -n virsh -c qemu:///system net-start default >/dev/null 2>&1 || true
+sudo -n virsh -c qemu:///system net-autostart default >/dev/null
 if ! sudo -n virsh -c qemu:///system pool-info vmrelay >/dev/null 2>&1; then
   sudo -n virsh -c qemu:///system pool-define-as vmrelay dir --target /var/lib/vmrelay/images >/dev/null
 fi
@@ -3170,11 +3203,23 @@ command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run 
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to set installer boot order." >&2; exit 1; }
 virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
 virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
+net_active="$(virsh -c qemu:///system net-info "$network" 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+if [ "$net_active" != "yes" ]; then
+  if ! virsh -c qemu:///system net-start "$network" >/dev/null 2>&1; then
+    echo "Libvirt network is not active: ${network}. Run host setup so VMRelay can start the NAT network." >&2
+    exit 1
+  fi
+fi
 [ -e "$iso" ] || { echo "ISO path does not exist: $iso" >&2; exit 1; }
 [ -r "$iso" ] || { echo "ISO path is not readable by $(whoami): $iso" >&2; exit 1; }
 if [ "$firmware" = "uefi" ]; then
   if [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovmf ] && [ ! -e /usr/share/qemu/OVMF.fd ]; then
     echo "UEFI firmware is missing; run setup or install ovmf on the host." >&2
+    exit 1
+  fi
+  command -v swtpm >/dev/null 2>&1 || { echo "swtpm is required for UEFI/Secure Boot VM creation. Run host setup or install swtpm." >&2; exit 1; }
+  if ! virsh -c qemu:///system domcapabilities --machine q35 2>/dev/null | awk '/<loader / { in_loader=1 } in_loader && /<value>.*OVMF.*(ms|secboot).*<\/value>/ { has_loader=1 } in_loader && /<value>yes<\/value>/ { has_secure=1 } /<\/loader>/ { in_loader=0 } END { exit(has_loader && has_secure ? 0 : 1) }'; then
+    echo "Secure Boot-capable OVMF for Q35 is missing. Run host setup or install OVMF Secure Boot firmware." >&2
     exit 1
   fi
 fi
@@ -3293,6 +3338,16 @@ ET.SubElement(cdrom, "boot", {"order": "1"})
 if first_disk is not None:
     ET.SubElement(first_disk, "boot", {"order": "2"})
 
+if devices is not None:
+    for iface in devices.findall("interface"):
+        source = iface.find("source")
+        if source is None or source.get("network") is None:
+            continue
+        model = iface.find("model")
+        if model is None:
+            model = ET.SubElement(iface, "model")
+        model.set("type", "e1000e")
+
 tree.write(path, encoding="unicode")
 PY
   virsh -c qemu:///system define "$xml" >/dev/null
@@ -3306,7 +3361,7 @@ args=(
   --memory "$memory"
   --vcpus "$cpus"
   --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
-  --network "network=${network},model=virtio"
+  --network "network=${network},model=e1000e"
   --graphics vnc,listen=127.0.0.1
   --input type=tablet,bus=usb
   --video virtio
@@ -3315,6 +3370,10 @@ args=(
   --boot "$boot_option"
   --noautoconsole
 )
+if [ "$firmware" = "uefi" ]; then
+  args+=(--machine q35)
+  args+=(--tpm backend.type=emulator,backend.version=2.0,model=tpm-crb)
+fi
 if ! virt-install "${args[@]}"; then
   virsh -c qemu:///system vol-delete --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1 || true
   exit 1
@@ -3360,7 +3419,7 @@ echo "Created VM ${name}. Open its console to complete the OS installer."
 
 func createVMBootOption(firmware string) string {
 	if strings.EqualFold(firmware, "uefi") {
-		return "uefi"
+		return "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes,loader.secure=yes"
 	}
 	return "cdrom,hd"
 }

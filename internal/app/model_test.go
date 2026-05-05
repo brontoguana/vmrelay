@@ -419,11 +419,27 @@ func TestErrorSummarySkipsWarningsAfterExitStatus(t *testing.T) {
 }
 
 func TestCreateVMBootOptionPreservesFirmwareMode(t *testing.T) {
-	if got := createVMBootOption("uefi"); got != "uefi" {
+	if got := createVMBootOption("uefi"); !strings.Contains(got, "uefi") || !strings.Contains(got, "secure-boot") || !strings.Contains(got, "enrolled-keys") {
 		t.Fatalf("UEFI boot option = %q", got)
 	}
 	if got := createVMBootOption("bios"); got != "cdrom,hd" {
 		t.Fatalf("BIOS boot option = %q", got)
+	}
+}
+
+func TestNICAttachDefaultsToWindowsCompatibleModel(t *testing.T) {
+	m := Model{
+		config: Config{Theme: "Classic"},
+		mode:   modeVMDetail,
+		vmTab:  vmTabNICs,
+		vmDetail: VMDetail{
+			VM: VM{Name: "win11"},
+		},
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	got := next.(Model)
+	if got.mode != modeAddNIC || got.addNICSource != "default" || got.addNICModel != "e1000e" {
+		t.Fatalf("NIC add defaults = mode %v source %q model %q", got.mode, got.addNICSource, got.addNICModel)
 	}
 }
 
