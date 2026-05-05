@@ -6,7 +6,7 @@ VMRelay is a terminal UI for managing VMs on a normal remote Linux host without 
 vmrelay
 ```
 
-On startup, VMRelay checks the latest GitHub release. If a newer version is available, it asks whether to update; accepting exits the TUI, runs the installer in the normal terminal so sudo password prompts work, then restarts VMRelay.
+On startup, VMRelay checks the latest GitHub release. If a newer version is available, it asks whether to update; accepting exits the TUI, restores the terminal, runs the installer against `/dev/tty` so sudo password prompts work, then restarts VMRelay.
 
 VMs run system-wide under `qemu:///system` on the remote host. VMRelay stores local host preferences on the client machine, stores VM ownership metadata on the VM host, and exposes VM graphical consoles through browser-based noVNC tunnels bound to loopback and forwarded over SSH.
 
@@ -42,7 +42,7 @@ Inside the TUI:
 ## Capabilities
 
 - Host manager opens by default; there is no separate day-to-day CLI workflow.
-- Startup prompts for update-and-restart when a newer GitHub release is available, handing off to the normal terminal before running the installer so interactive sudo prompts work correctly.
+- Startup prompts for update-and-restart when a newer GitHub release is available, handing off to a restored `/dev/tty` terminal before running the installer so interactive sudo prompts work correctly.
 - The TUI uses a full-screen terminal layout with a VMRelay title border, one outer line frame, and ten selectable themes.
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts, then initializes a VMRelay libvirt storage pool at `/var/lib/vmrelay/images`.

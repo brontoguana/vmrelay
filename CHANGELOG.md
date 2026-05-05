@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.18 - 2026-05-05
+
+- Hardened startup self-update when sudo prompts for a password: VMRelay now repairs terminal mode with `stty sane` and runs the installer with stdin/stdout/stderr attached directly to `/dev/tty`.
+- Investigated the reported stuck sudo prompt; no live local or onward-SSH `sudo`/`vmrelay` process was visible by the time of inspection, so the fix targets the remaining likely terminal-state failure mode.
+
 ## 0.2.17 - 2026-05-05
 
 - Fixed VM creation when staging a user-home ISO into libvirt storage: `virsh vol-upload` progress output is now suppressed so VMRelay captures only the final staged ISO path for `virt-install`.

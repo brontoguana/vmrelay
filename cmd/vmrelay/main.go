@@ -11,7 +11,7 @@ import (
 	"github.com/brontoguana/vmrelay/internal/app"
 )
 
-var version = "0.2.17"
+var version = "0.2.18"
 
 func main() {
 	for _, arg := range os.Args[1:] {
@@ -48,12 +48,16 @@ func main() {
 }
 
 func runInstallerAndRestart() error {
-	fmt.Fprintln(os.Stderr, "VMRelay is updating. If prompted, enter your local sudo password.")
+	terminal := installerTerminal()
+	defer terminal.close()
+
+	fmt.Fprintln(terminal.err(), "VMRelay is updating. If prompted, enter your local sudo password.")
+	repairInstallerTerminal()
 	cmd := exec.Command("bash", "-lc", app.InstallCommand())
 	cmd.Env = os.Environ()
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdin = terminal.in()
+	cmd.Stdout = terminal.out()
+	cmd.Stderr = terminal.err()
 	if err := cmd.Run(); err != nil {
 		return err
 	}
@@ -61,7 +65,54 @@ func runInstallerAndRestart() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "VMRelay updated. Restarting...")
+	fmt.Fprintln(terminal.err(), "VMRelay updated. Restarting...")
 	argv := append([]string{exe}, os.Args[1:]...)
 	return syscall.Exec(exe, argv, os.Environ())
+}
+
+type installerIO struct {
+	tty *os.File
+}
+
+func installerTerminal() installerIO {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return installerIO{}
+	}
+	return installerIO{tty: tty}
+}
+
+func (io installerIO) in() *os.File {
+	if io.tty != nil {
+		return io.tty
+	}
+	return os.Stdin
+}
+
+func (io installerIO) out() *os.File {
+	if io.tty != nil {
+		return io.tty
+	}
+	return os.Stdout
+}
+
+func (io installerIO) err() *os.File {
+	if io.tty != nil {
+		return io.tty
+	}
+	return os.Stderr
+}
+
+func (io installerIO) close() {
+	if io.tty != nil {
+		_ = io.tty.Close()
+	}
+}
+
+func repairInstallerTerminal() {
+	cmd := exec.Command("sh", "-c", "stty sane < /dev/tty > /dev/tty 2>&1 || true")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }
