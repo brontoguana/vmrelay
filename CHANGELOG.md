@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.15 - 2026-05-05
+
+- Changed host setup to initialize a VMRelay-managed libvirt directory storage pool named `vmrelay` at `/var/lib/vmrelay/images`, start it, and mark it for autostart.
+- Changed host readiness checks to report whether the VMRelay storage pool is running, falling back to reporting the first active libvirt pool on older hosts.
+- Changed VM creation to prefer the `vmrelay` storage pool before existing `images` or `default` pools, and to tell the user to run host setup when no running storage pool exists.
+
 ## 0.2.14 - 2026-05-05
 
 - Fixed VM creation on hosts where the SSH user can manage libvirt but does not have passwordless sudo: VMRelay now creates the boot disk through a running libvirt storage pool instead of `sudo qemu-img` in `/var/lib/libvirt/images`.

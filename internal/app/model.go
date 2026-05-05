@@ -2666,6 +2666,16 @@ command -v qemu-img >/dev/null && printf 'qemu-img: yes\n' || printf 'qemu-img: 
 if [ -d /usr/share/OVMF ] || [ -d /usr/share/ovmf ] || [ -e /usr/share/qemu/OVMF.fd ]; then printf 'OVMF/UEFI: yes\n'; else printf 'OVMF/UEFI: missing\n'; fi
 command -v websockify >/dev/null && printf 'websockify: yes\n' || printf 'websockify: missing\n'
 [ -d /usr/share/novnc ] && printf 'noVNC: yes\n' || printf 'noVNC: missing\n'
+vmrelay_pool_state="$(virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' || true)"
+if [ "$vmrelay_pool_state" = "running" ]; then
+  vmrelay_pool_target="$(virsh -c qemu:///system pool-dumpxml vmrelay 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1)"
+  printf 'VMRelay storage pool: yes (%s)\n' "${vmrelay_pool_target:-vmrelay}"
+elif virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { found=1 } END { exit found ? 0 : 1 }'; then
+  first_pool="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
+  printf 'VMRelay storage pool: fallback (%s)\n' "$first_pool"
+else
+  printf 'VMRelay storage pool: missing\n'
+fi
 [ -r /var/lib/vmrelay/ownership.tsv ] && printf 'VMRelay ownership: yes\n' || printf 'VMRelay ownership: not initialized\n'
 `
 	return ssh(h.Target, script, 20*time.Second)
@@ -2682,11 +2692,19 @@ else
 fi
 group=libvirt
 if ! getent group "$group" >/dev/null 2>&1; then group=libvirt-qemu; fi
-sudo -n install -d -m 2775 -o root -g "$group" /var/lib/vmrelay
+sudo -n install -d -m 2775 -o root -g "$group" /var/lib/vmrelay /var/lib/vmrelay/images
 sudo -n touch /var/lib/vmrelay/ownership.tsv
 sudo -n chown root:"$group" /var/lib/vmrelay/ownership.tsv
 sudo -n chmod 0664 /var/lib/vmrelay/ownership.tsv
-echo "Host setup complete. VMRelay ownership state is /var/lib/vmrelay/ownership.tsv."
+if ! sudo -n virsh -c qemu:///system pool-info vmrelay >/dev/null 2>&1; then
+  sudo -n virsh -c qemu:///system pool-define-as vmrelay dir --target /var/lib/vmrelay/images >/dev/null
+fi
+sudo -n virsh -c qemu:///system pool-build vmrelay >/dev/null 2>&1 || true
+sudo -n virsh -c qemu:///system pool-start vmrelay >/dev/null 2>&1 || true
+sudo -n virsh -c qemu:///system pool-autostart vmrelay >/dev/null
+state="$(sudo -n virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+[ "$state" = "running" ] || { echo "VMRelay storage pool could not be started." >&2; exit 1; }
+echo "Host setup complete. VMRelay ownership state is /var/lib/vmrelay/ownership.tsv. Storage pool vmrelay is /var/lib/vmrelay/images."
 `
 	return ssh(h.Target, script, 15*time.Minute)
 }
@@ -2993,7 +3011,7 @@ pool_running() {
 }
 
 select_pool() {
-  for candidate in images default; do
+  for candidate in vmrelay images default; do
     if pool_running "$candidate"; then
       printf '%%s\n' "$candidate"
       return 0
@@ -3008,7 +3026,7 @@ select_pool() {
     fi
   done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
   first="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
-  [ -n "$first" ] || { echo "No running libvirt storage pool found for VM disk creation." >&2; return 1; }
+  [ -n "$first" ] || { echo "No running libvirt storage pool found for VM disk creation. Run host setup so VMRelay can initialize /var/lib/vmrelay/images." >&2; return 1; }
   printf '%%s\n' "$first"
 }
 
