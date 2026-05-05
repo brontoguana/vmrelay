@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.29 - 2026-05-05
+
+- Made the Mappings page show the concrete guest-facing endpoint clearly: VMs connect to the VM endpoint column, normally `192.168.122.1:<vm-port>`, and VMRelay forwards that traffic back to `127.0.0.1:<local-service-port>` on the local workstation.
+- Mapping start now performs a minimal host-side bootstrap by ensuring the libvirt `default` NAT network is defined/running/autostarted when possible and ensuring SSH reverse forwards can bind the VM bridge, with setup-focused errors if sudo-capable host setup is still required.
+- Mapping start records the discovered bridge IP locally so the Mappings page continues to show the exact endpoint VMs should use.
+- Fixed new and duplicated VM definitions so guest-initiated restarts use `<on_reboot>restart</on_reboot>` instead of shutting the domain off.
+- Repaired persistent reboot lifecycle XML on `iron` for `Win10-Orig`, `Win11-Orig`, `Win10-Aardvark`, and `Win10-Bison`; currently running VMs will use the repaired lifecycle after their next stop/start because libvirt keeps the old value in live memory.
+
 ## 0.2.28 - 2026-05-05
 
 - Changed host Mappings from local SSH forwards to VM-accessible service mappings: VMs connect to the host's stable libvirt bridge address, normally `192.168.122.1`, and SSH reverse-forwards that traffic back to `127.0.0.1` on the local workstation.

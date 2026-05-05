@@ -215,8 +215,16 @@ func TestHostDetailRendersMappings(t *testing.T) {
 	if !strings.Contains(view, "Mappings") || !strings.Contains(view, "Web") {
 		t.Fatalf("mapping tab did not render configured mapping:\n%s", view)
 	}
-	if !strings.Contains(view, "127.0.0.1:8080") || !strings.Contains(view, "default bridge:8081") {
+	if !strings.Contains(view, "VMs connect to the VM endpoint") {
+		t.Fatalf("mapping tab should explain the guest-facing endpoint:\n%s", view)
+	}
+	if !strings.Contains(view, "127.0.0.1:8080") || !strings.Contains(view, "192.168.122.1:8081") {
 		t.Fatalf("mapping endpoints missing:\n%s", view)
+	}
+	writeMappingEndpointHost(m.stateDir, "iron", "map1", "192.168.130.1")
+	view = stripANSI(m.viewHostDetail(100, 20))
+	if !strings.Contains(view, "192.168.130.1:8081") {
+		t.Fatalf("mapping tab should render recorded bridge endpoint:\n%s", view)
 	}
 }
 

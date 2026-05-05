@@ -132,6 +132,7 @@ const (
 	maxVMNameRunes         = 80
 	defaultVMBridgeNetwork = "default"
 	defaultVMBridgeHost    = "default"
+	defaultVMBridgeAddress = "192.168.122.1"
 	addMappingFieldCount   = 3
 )
 
@@ -2242,6 +2243,7 @@ func createVMFieldDisplay(value string, width int, active bool) string {
 func (m Model) viewMappings(width, height int) string {
 	var b strings.Builder
 	mappings := m.hostMappings()
+	b.WriteString("VMs connect to the VM endpoint shown below. VMRelay carries that traffic back to the local service on this machine.\n\n")
 	if len(mappings) == 0 {
 		b.WriteString("No VM service mappings configured for this host.\n\nPress n to add one.")
 		return fitLines(b.String(), width, height)
@@ -2259,7 +2261,7 @@ func (m Model) viewMappings(width, height int) string {
 		if mappingActive(m.stateDir, m.activeHost.Name, mapping.ID) {
 			status = "active"
 		}
-		vmEndpoint := mappingVMEndpointLabel(mapping)
+		vmEndpoint := m.mappingVMEndpointLabel(mapping)
 		local := fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort)
 		row := cursor + " " + cell(mapping.Name, nameW) + " " + cell(vmEndpoint, 24) + " " + cell(local, 18) + " " + cell(status, 8)
 		if i == m.mapCursor {
@@ -2356,11 +2358,12 @@ func (m Model) viewBusy(width, height int) string {
 func (m Model) viewAddMapping(width, height int) string {
 	cursors := []string{" ", " ", " "}
 	cursors[m.addMapField] = ">"
-	body := fmt.Sprintf("Add VM Service Mapping for %s\n\n%s Name:               %s\n%s Local service port: %s\n%s VM port:            %s\n\nVMs connect to the host bridge IP on the VM port. SSH forwards that back to 127.0.0.1 on this machine.\nEvery VM on the default NAT network uses the same bridge IP.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+	body := fmt.Sprintf("Add VM Service Mapping for %s\n\n%s Name:               %s\n%s Local service port: %s\n%s VM port:            %s\n\nVMs will connect to %s:<VM port>, normally from any VM on the default NAT network.\nSSH forwards that back to 127.0.0.1:<local service port> on this machine.\nEnter moves/saves. Tab switches fields. Esc cancels.",
 		m.activeHost.Name,
 		cursors[0], m.addMapName,
 		cursors[1], m.addMapLocalPort,
-		cursors[2], m.addMapRemotePort)
+		cursors[2], m.addMapRemotePort,
+		defaultVMBridgeAddress)
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
@@ -2372,7 +2375,7 @@ func (m Model) helpText() string {
 			case hostTabConfig:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: create VM  r: check  s: setup"
 			case hostTabMappings:
-				return "?: help  m: themes  b: hosts  left/right: tabs  n: add VM mapping  e: start/stop  d: remove"
+				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  s: setup"
 			default:
 				return "?: help  m: themes  b: hosts  enter: detail  n: create VM  r: refresh  p/f: power  o/x: console"
 			}
@@ -2751,10 +2754,13 @@ func normalizeMappingRemoteHost(host string) string {
 	}
 }
 
-func mappingVMEndpointLabel(mapping PortMapping) string {
+func (m Model) mappingVMEndpointLabel(mapping PortMapping) string {
 	host := normalizeMappingRemoteHost(mapping.RemoteHost)
 	if host == defaultVMBridgeHost {
-		host = "default bridge"
+		host = readMappingEndpointHost(m.stateDir, m.activeHost.Name, mapping.ID)
+		if host == "" {
+			host = defaultVMBridgeAddress
+		}
 	}
 	return fmt.Sprintf("%s:%d", host, mapping.RemotePort)
 }
@@ -3376,6 +3382,22 @@ if devices is not None:
             model = ET.SubElement(iface, "model")
         model.set("type", "e1000e")
 
+def set_lifecycle(tag, value):
+    el = root.find(tag)
+    if el is None:
+        el = ET.Element(tag)
+        os_el = root.find("os")
+        if os_el is not None:
+            index = list(root).index(os_el) + 1
+            root.insert(index, el)
+        else:
+            root.insert(0, el)
+    el.text = value
+
+set_lifecycle("on_poweroff", "destroy")
+set_lifecycle("on_reboot", "restart")
+set_lifecycle("on_crash", "destroy")
+
 tree.write(path, encoding="unicode")
 PY
   virsh -c qemu:///system define "$xml" >/dev/null
@@ -3639,6 +3661,23 @@ if os_el is not None:
             ET.SubElement(os_el, "boot", {"dev": dev})
     elif removed_os_cdrom:
         ET.SubElement(os_el, "boot", {"dev": "hd"})
+
+def set_lifecycle(tag, value):
+    el = root.find(tag)
+    if el is None:
+        el = ET.Element(tag)
+        os_el = root.find("os")
+        if os_el is not None:
+            index = list(root).index(os_el) + 1
+            root.insert(index, el)
+        else:
+            root.insert(0, el)
+    el.text = value
+
+set_lifecycle("on_poweroff", "destroy")
+set_lifecycle("on_reboot", "restart")
+set_lifecycle("on_crash", "destroy")
+
 tree.write(path, encoding="unicode")
 PY
 virsh -c qemu:///system define "$tmp" >/dev/null
@@ -4004,6 +4043,10 @@ func startPortMapping(h Host, mapping PortMapping, stateDir string) (string, err
 	if mapping.LocalPort == 0 || mapping.RemotePort == 0 {
 		return "", fmt.Errorf("mapping ports are not configured")
 	}
+	prepareOut, prepareErr := prepareVMServiceMappingHost(h)
+	if prepareErr != nil {
+		return strings.TrimSpace(prepareOut), prepareErr
+	}
 	bindHost := normalizeMappingRemoteHost(mapping.RemoteHost)
 	var bridgeOut string
 	if bindHost == defaultVMBridgeHost {
@@ -4025,9 +4068,76 @@ func startPortMapping(h Host, mapping PortMapping, stateDir string) (string, err
 		h.Target,
 	}
 	if out, err := runCommand(20*time.Second, "ssh", args...); err != nil {
-		return strings.TrimSpace(strings.TrimSpace(bridgeOut) + "\n" + strings.TrimSpace(out)), fmt.Errorf("failed to start SSH VM service mapping: %w", err)
+		return strings.TrimSpace(strings.TrimSpace(prepareOut) + "\n" + strings.TrimSpace(bridgeOut) + "\n" + strings.TrimSpace(out)), fmt.Errorf("failed to start SSH VM service mapping: %w", err)
 	}
+	writeMappingEndpointHost(stateDir, h.Name, mapping.ID, bindHost)
 	return fmt.Sprintf("Started %s: VMs use %s:%d -> this machine 127.0.0.1:%d.", mapping.Name, bindHost, mapping.RemotePort, mapping.LocalPort), nil
+}
+
+func prepareVMServiceMappingHost(h Host) (string, error) {
+	script := fmt.Sprintf(`
+set -euo pipefail
+network=%s
+run_virsh() {
+  virsh -c qemu:///system "$@" 2>/dev/null || sudo -n virsh -c qemu:///system "$@"
+}
+if ! virsh -c qemu:///system net-info "$network" >/dev/null 2>&1; then
+  tmp_net="$(mktemp)"
+  cat >"$tmp_net" <<'NETXML'
+<network>
+  <name>default</name>
+  <forward mode="nat"/>
+  <bridge name="virbr0" stp="on" delay="0"/>
+  <ip address="192.168.122.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.122.2" end="192.168.122.254"/>
+    </dhcp>
+  </ip>
+</network>
+NETXML
+  if ! run_virsh net-define "$tmp_net" >/dev/null; then
+    rm -f "$tmp_net"
+    echo "Could not define libvirt default NAT network. Run host setup with a sudo-capable account, then retry." >&2
+    exit 1
+  fi
+  rm -f "$tmp_net"
+fi
+state="$(virsh -c qemu:///system net-info "$network" 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' || true)"
+if [ "$state" != "yes" ]; then
+  run_virsh net-start "$network" >/dev/null || { echo "Could not start libvirt network $network. Run host setup, then retry." >&2; exit 1; }
+fi
+run_virsh net-autostart "$network" >/dev/null || true
+sshd_bin="$(command -v sshd 2>/dev/null || true)"
+if [ -z "$sshd_bin" ] && [ -x /usr/sbin/sshd ]; then sshd_bin=/usr/sbin/sshd; fi
+forwarding_ok=0
+if [ -n "$sshd_bin" ]; then
+  if "$sshd_bin" -T 2>/dev/null | awk '
+    $1 == "allowtcpforwarding" && ($2 == "yes" || $2 == "all" || $2 == "remote") { allow=1 }
+    $1 == "gatewayports" && $2 == "clientspecified" { gateway=1 }
+    END { exit(allow && gateway ? 0 : 1) }
+  '; then
+    forwarding_ok=1
+  fi
+fi
+if [ "$forwarding_ok" -ne 1 ] && grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
+  forwarding_ok=1
+fi
+if [ "$forwarding_ok" -ne 1 ]; then
+  tmp_sshd="$(mktemp)"
+  cat >"$tmp_sshd" <<'SSHD'
+# Managed by VMRelay. Allows SSH reverse forwards to bind the libvirt VM bridge.
+AllowTcpForwarding yes
+GatewayPorts clientspecified
+SSHD
+  sudo -n install -d -m 0755 /etc/ssh/sshd_config.d || { rm -f "$tmp_sshd"; echo "VM service forwarding needs SSH server setup. Run host setup with a sudo-capable account, then retry." >&2; exit 1; }
+  sudo -n install -m 0644 "$tmp_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
+  rm -f "$tmp_sshd"
+  sudo -n sshd -t
+  sudo -n systemctl reload ssh >/dev/null 2>&1 || sudo -n systemctl reload sshd >/dev/null 2>&1 || sudo -n service ssh reload >/dev/null 2>&1 || sudo -n service sshd reload >/dev/null 2>&1 || true
+fi
+printf 'VM service mapping host setup: ready\n'
+`, shellQuote(defaultVMBridgeNetwork))
+	return ssh(h.Target, script, 45*time.Second)
 }
 
 func stopPortMapping(h Host, mapping PortMapping, stateDir string) (string, error) {
@@ -4128,6 +4238,30 @@ func consoleStatePath(stateDir, host, vm string) string {
 
 func mappingControlPath(stateDir, host, id string) string {
 	return filepath.Join(stateDir, "mapping-"+hash(host+"-"+id)+".ctl")
+}
+
+func mappingEndpointPath(stateDir, host, id string) string {
+	return filepath.Join(stateDir, "mapping-"+hash(host+"-"+id)+".endpoint")
+}
+
+func writeMappingEndpointHost(stateDir, host, id, endpointHost string) {
+	endpointHost = strings.TrimSpace(endpointHost)
+	if endpointHost == "" {
+		return
+	}
+	_ = os.MkdirAll(stateDir, 0o755)
+	_ = os.WriteFile(mappingEndpointPath(stateDir, host, id), []byte(endpointHost+"\n"), 0o644)
+}
+
+func readMappingEndpointHost(stateDir, host, id string) string {
+	if stateDir == "" || host == "" || id == "" {
+		return ""
+	}
+	data, err := os.ReadFile(mappingEndpointPath(stateDir, host, id))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func stablePort(key string, base, span int) int {
