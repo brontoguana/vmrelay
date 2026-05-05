@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.16 - 2026-05-05
+
+- Fixed startup self-update when the installer needs a sudo password: accepting an update now exits the TUI first, runs the installer in the normal terminal with stdin/stdout/stderr attached, then restarts VMRelay.
+- Updated the update prompt/help text to make the terminal handoff explicit.
+- Added a regression test that accepting the update prompt quits for the terminal installer handoff instead of running the installer inside the TUI.
+
 ## 0.2.15 - 2026-05-05
 
 - Changed host setup to initialize a VMRelay-managed libvirt directory storage pool named `vmrelay` at `/var/lib/vmrelay/images`, start it, and mark it for autostart.

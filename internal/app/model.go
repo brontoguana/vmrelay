@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -157,6 +156,7 @@ type Model struct {
 	vmDetail    VMDetail
 	activeHost  Host
 	updateInfo  updateInfo
+	updateExit  bool
 
 	addName   string
 	addTarget string
@@ -223,10 +223,6 @@ type updateCheckMsg struct {
 	err       error
 }
 
-type updateFinishedMsg struct {
-	err error
-}
-
 var (
 	defaultWidth  = 100
 	defaultHeight = 30
@@ -234,6 +230,14 @@ var (
 
 const latestReleaseAPI = "https://api.github.com/repos/brontoguana/vmrelay/releases/latest"
 const installCommand = "curl -fsSL https://raw.githubusercontent.com/brontoguana/vmrelay/main/install.sh | bash"
+
+func InstallCommand() string {
+	return installCommand
+}
+
+func (m Model) UpdateRequested() bool {
+	return m.updateExit
+}
 
 type theme struct {
 	Name     string
@@ -324,8 +328,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateResult(msg)
 	case updateCheckMsg:
 		return m.updateCheck(msg)
-	case updateFinishedMsg:
-		return m.updateFinished(msg)
 	}
 	return m, nil
 }
@@ -1305,15 +1307,10 @@ func (m Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateUpdateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "y":
-		m.mode = modeBusy
-		m.priorMode = modeUpdate
-		m.status = "Updating to " + m.updateInfo.Latest + "..."
+		m.updateExit = true
+		m.status = "Leaving VMRelay to run the installer in your terminal..."
 		m.errText = ""
-		cmd := exec.Command("bash", "-lc", installCommand)
-		cmd.Env = os.Environ()
-		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return updateFinishedMsg{err: err}
-		})
+		return m, tea.Quit
 	case "n", "esc":
 		m.mode = modeHosts
 		m.status = "Skipped update to " + m.updateInfo.Latest + "."
@@ -1338,18 +1335,6 @@ func (m Model) updateCheck(msg updateCheckMsg) (tea.Model, tea.Cmd) {
 	m.mode = modeHosts
 	m.status = "Ready."
 	return m, nil
-}
-
-func (m Model) updateFinished(msg updateFinishedMsg) (tea.Model, tea.Cmd) {
-	if msg.err != nil {
-		m.mode = modeUpdate
-		m.status = "Update failed."
-		m.errText = msg.err.Error()
-		return m, nil
-	}
-	m.status = "Update installed. Restarting VMRelay..."
-	m.errText = ""
-	return m, restartCmd()
 }
 
 func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
@@ -2246,7 +2231,8 @@ func (m Model) viewUpdatePrompt(width, height int) string {
 	if m.updateInfo.URL != "" {
 		b.WriteString("Release:   " + m.updateInfo.URL + "\n")
 	}
-	b.WriteString("\nPress Enter to update and restart VMRelay, or n to skip for now.")
+	b.WriteString("\nPress Enter to leave the TUI, run the installer in this terminal, and restart VMRelay.")
+	b.WriteString("\nPress n to skip for now.")
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(b.String())
 }
 
@@ -2306,7 +2292,7 @@ func (m Model) helpText() string {
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		case modeUpdate:
-			return "enter/y: update and restart  n/esc: skip  q: quit"
+			return "enter/y: update in terminal  n/esc: skip  q: quit"
 		default:
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
@@ -3660,20 +3646,6 @@ func checkForUpdateCmd(current string) tea.Cmd {
 		latest := strings.TrimPrefix(strings.TrimSpace(release.TagName), "v")
 		info := updateInfo{Latest: latest, URL: release.URL}
 		return updateCheckMsg{info: info, available: versionGreater(latest, current)}
-	}
-}
-
-func restartCmd() tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return updateFinishedMsg{err: err}
-		}
-		argv := append([]string{exe}, os.Args[1:]...)
-		if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
-			return updateFinishedMsg{err: err}
-		}
-		return nil
 	}
 }
 

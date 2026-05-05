@@ -111,8 +111,32 @@ func TestUpdatePromptRendersAvailableVersion(t *testing.T) {
 	if !strings.Contains(view, "Installed: 0.2.3") || !strings.Contains(view, "Available: 0.2.4") {
 		t.Fatalf("update prompt missing version details:\n%s", view)
 	}
-	if !strings.Contains(view, "enter/y: update and restart") {
+	if !strings.Contains(view, "enter/y: update in terminal") {
 		t.Fatalf("update prompt missing footer help:\n%s", view)
+	}
+}
+
+func TestUpdatePromptQuitsForTerminalInstaller(t *testing.T) {
+	m := Model{
+		version:    "0.2.15",
+		config:     Config{Theme: "Classic"},
+		mode:       modeUpdate,
+		updateInfo: updateInfo{Latest: "0.2.16"},
+	}
+	updated, cmd := m.updateUpdateKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("accepting update should quit the TUI for terminal installer handoff")
+	}
+	next := updated.(Model)
+	if !next.UpdateRequested() {
+		t.Fatal("accepting update should mark update requested")
+	}
+
+	m.updateExit = false
+	updated, _ = m.updateUpdateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	next = updated.(Model)
+	if next.UpdateRequested() {
+		t.Fatal("skipping update should not mark update requested")
 	}
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${1:-0.2.15}"
+version="${1:-0.2.16}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist="$root/dist"
 mkdir -p "$dist"
