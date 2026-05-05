@@ -2929,8 +2929,40 @@ else
 fi
 sshd_bin="$(command -v sshd 2>/dev/null || true)"
 if [ -z "$sshd_bin" ] && [ -x /usr/sbin/sshd ]; then sshd_bin=/usr/sbin/sshd; fi
-if { [ -n "$sshd_bin" ] && "$sshd_bin" -T 2>/dev/null | awk '$1 == "gatewayports" && $2 == "clientspecified" { ok=1 } END { exit ok ? 0 : 1 }'; } || grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
-  printf 'VM service forwarding: yes\n'
+vmrelay_user="$(whoami)"
+vm_service_forwarding=0
+vm_service_restricted=0
+if [ -n "${bridge_addr:-}" ]; then
+  if [ -n "$sshd_bin" ] && "$sshd_bin" -T -C "user=${vmrelay_user},host=localhost,addr=127.0.0.1" 2>/dev/null | awk -v bridge="$bridge_addr" '
+    $1 == "allowtcpforwarding" && ($2 == "yes" || $2 == "all" || $2 == "remote") { allow=1 }
+    $1 == "gatewayports" && $2 == "clientspecified" { gateway=1 }
+    $1 == "permitlisten" {
+      for (i=2; i<=NF; i++) {
+        if ($i == bridge ":*" || $i == bridge ":any") permit=1
+      }
+    }
+    END { exit(allow && gateway && permit ? 0 : 1) }
+  '; then
+    vm_service_forwarding=1
+    vm_service_restricted=1
+  elif [ -n "$sshd_bin" ] && "$sshd_bin" -T -C "user=${vmrelay_user},host=localhost,addr=127.0.0.1" 2>/dev/null | awk '
+    $1 == "allowtcpforwarding" && ($2 == "yes" || $2 == "all" || $2 == "remote") { allow=1 }
+    $1 == "gatewayports" && $2 == "clientspecified" { gateway=1 }
+    END { exit(allow && gateway ? 0 : 1) }
+  '; then
+    vm_service_forwarding=1
+  elif grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null &&
+    grep -Riq "^[[:space:]]*PermitListen[[:space:]].*${bridge_addr}:[*]" /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
+    vm_service_forwarding=1
+    vm_service_restricted=1
+  elif grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
+    vm_service_forwarding=1
+  fi
+fi
+if [ "$vm_service_restricted" -eq 1 ]; then
+  printf 'VM service forwarding: yes (bridge-restricted)\n'
+elif [ "$vm_service_forwarding" -eq 1 ]; then
+  printf 'VM service forwarding: yes (bridge-bound)\n'
 else
   printf 'VM service forwarding: needs setup\n'
 fi
@@ -2983,16 +3015,38 @@ NETXML
 fi
 sudo -n virsh -c qemu:///system net-start default >/dev/null 2>&1 || true
 sudo -n virsh -c qemu:///system net-autostart default >/dev/null
+bridge_addr="$(sudo -n virsh -c qemu:///system net-dumpxml default 2>/dev/null | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p; s/.*<ip address=\"\([^\"]*\)\".*/\1/p" | head -n 1)"
+[ -n "$bridge_addr" ] || bridge_addr=192.168.122.1
+vmrelay_user="$(whoami)"
 sudo -n install -d -m 0755 /etc/ssh/sshd_config.d
 tmp_sshd="$(mktemp)"
-cat >"$tmp_sshd" <<'SSHD'
-# Managed by VMRelay. Allows SSH reverse forwards to bind the libvirt VM bridge.
-AllowTcpForwarding yes
-GatewayPorts clientspecified
+cat >"$tmp_sshd" <<SSHD
+# Managed by VMRelay. Allows this VMRelay SSH user to bind reverse forwards only on the libvirt VM bridge.
+Match User ${vmrelay_user}
+  AllowTcpForwarding yes
+  GatewayPorts clientspecified
+  PermitListen ${bridge_addr}:*
 SSHD
+backup_sshd="$(mktemp)"
+if sudo -n test -e /etc/ssh/sshd_config.d/99-vmrelay.conf; then
+  sudo -n cp /etc/ssh/sshd_config.d/99-vmrelay.conf "$backup_sshd"
+else
+  rm -f "$backup_sshd"
+  backup_sshd=""
+fi
 sudo -n install -m 0644 "$tmp_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
 rm -f "$tmp_sshd"
-sudo -n sshd -t
+if ! sudo -n sshd -t; then
+  if [ -n "$backup_sshd" ]; then
+    sudo -n cp "$backup_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
+  else
+    sudo -n rm -f /etc/ssh/sshd_config.d/99-vmrelay.conf
+  fi
+  rm -f "$backup_sshd"
+  echo "SSH server rejected bridge-restricted VMRelay forwarding config. Check OpenSSH PermitListen support." >&2
+  exit 1
+fi
+rm -f "$backup_sshd"
 sudo -n systemctl reload ssh >/dev/null 2>&1 || sudo -n systemctl reload sshd >/dev/null 2>&1 || sudo -n service ssh reload >/dev/null 2>&1 || sudo -n service sshd reload >/dev/null 2>&1 || true
 if ! sudo -n virsh -c qemu:///system pool-info vmrelay >/dev/null 2>&1; then
   sudo -n virsh -c qemu:///system pool-define-as vmrelay dir --target /var/lib/vmrelay/images >/dev/null
@@ -4198,11 +4252,27 @@ if [ "$state" != "yes" ]; then
   run_virsh net-start "$network" >/dev/null || { echo "Could not start libvirt network $network. Run host setup, then retry." >&2; exit 1; }
 fi
 run_virsh net-autostart "$network" >/dev/null || true
+bridge_addr="$(virsh -c qemu:///system net-dumpxml "$network" 2>/dev/null | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p; s/.*<ip address=\"\([^\"]*\)\".*/\1/p" | head -n 1)"
+[ -n "$bridge_addr" ] || { echo "Could not determine VM bridge address for libvirt network $network." >&2; exit 1; }
+vmrelay_user="$(whoami)"
 sshd_bin="$(command -v sshd 2>/dev/null || true)"
 if [ -z "$sshd_bin" ] && [ -x /usr/sbin/sshd ]; then sshd_bin=/usr/sbin/sshd; fi
 forwarding_ok=0
+restricted_ok=0
 if [ -n "$sshd_bin" ]; then
-  if "$sshd_bin" -T 2>/dev/null | awk '
+  if "$sshd_bin" -T -C "user=${vmrelay_user},host=localhost,addr=127.0.0.1" 2>/dev/null | awk -v bridge="$bridge_addr" '
+    $1 == "allowtcpforwarding" && ($2 == "yes" || $2 == "all" || $2 == "remote") { allow=1 }
+    $1 == "gatewayports" && $2 == "clientspecified" { gateway=1 }
+    $1 == "permitlisten" {
+      for (i=2; i<=NF; i++) {
+        if ($i == bridge ":*" || $i == bridge ":any") permit=1
+      }
+    }
+    END { exit(allow && gateway && permit ? 0 : 1) }
+  '; then
+    forwarding_ok=1
+    restricted_ok=1
+  elif "$sshd_bin" -T -C "user=${vmrelay_user},host=localhost,addr=127.0.0.1" 2>/dev/null | awk '
     $1 == "allowtcpforwarding" && ($2 == "yes" || $2 == "all" || $2 == "remote") { allow=1 }
     $1 == "gatewayports" && $2 == "clientspecified" { gateway=1 }
     END { exit(allow && gateway ? 0 : 1) }
@@ -4210,21 +4280,51 @@ if [ -n "$sshd_bin" ]; then
     forwarding_ok=1
   fi
 fi
+if [ "$forwarding_ok" -ne 1 ] && grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null &&
+  grep -Riq "^[[:space:]]*PermitListen[[:space:]].*${bridge_addr}:[*]" /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
+  forwarding_ok=1
+  restricted_ok=1
+fi
 if [ "$forwarding_ok" -ne 1 ] && grep -Riq '^[[:space:]]*GatewayPorts[[:space:]]\+clientspecified' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null; then
   forwarding_ok=1
 fi
-if [ "$forwarding_ok" -ne 1 ]; then
+if [ "$restricted_ok" -ne 1 ]; then
   tmp_sshd="$(mktemp)"
-  cat >"$tmp_sshd" <<'SSHD'
-# Managed by VMRelay. Allows SSH reverse forwards to bind the libvirt VM bridge.
-AllowTcpForwarding yes
-GatewayPorts clientspecified
+  cat >"$tmp_sshd" <<SSHD
+# Managed by VMRelay. Allows this VMRelay SSH user to bind reverse forwards only on the libvirt VM bridge.
+Match User ${vmrelay_user}
+  AllowTcpForwarding yes
+  GatewayPorts clientspecified
+  PermitListen ${bridge_addr}:*
 SSHD
-  sudo -n install -d -m 0755 /etc/ssh/sshd_config.d || { rm -f "$tmp_sshd"; echo "VM service forwarding needs SSH server setup. Run host setup with a sudo-capable account, then retry." >&2; exit 1; }
-  sudo -n install -m 0644 "$tmp_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
-  rm -f "$tmp_sshd"
-  sudo -n sshd -t
-  sudo -n systemctl reload ssh >/dev/null 2>&1 || sudo -n systemctl reload sshd >/dev/null 2>&1 || sudo -n service ssh reload >/dev/null 2>&1 || sudo -n service sshd reload >/dev/null 2>&1 || true
+  if sudo -n install -d -m 0755 /etc/ssh/sshd_config.d; then
+    backup_sshd="$(mktemp)"
+    if sudo -n test -e /etc/ssh/sshd_config.d/99-vmrelay.conf; then
+      sudo -n cp /etc/ssh/sshd_config.d/99-vmrelay.conf "$backup_sshd"
+    else
+      rm -f "$backup_sshd"
+      backup_sshd=""
+    fi
+    sudo -n install -m 0644 "$tmp_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
+    rm -f "$tmp_sshd"
+    if ! sudo -n sshd -t; then
+      if [ -n "$backup_sshd" ]; then
+        sudo -n cp "$backup_sshd" /etc/ssh/sshd_config.d/99-vmrelay.conf
+      else
+        sudo -n rm -f /etc/ssh/sshd_config.d/99-vmrelay.conf
+      fi
+      rm -f "$backup_sshd"
+      [ "$forwarding_ok" -eq 1 ] || { echo "SSH server rejected bridge-restricted VMRelay forwarding config. Run host setup on a host with OpenSSH PermitListen support." >&2; exit 1; }
+    else
+      rm -f "$backup_sshd"
+      sudo -n systemctl reload ssh >/dev/null 2>&1 || sudo -n systemctl reload sshd >/dev/null 2>&1 || sudo -n service ssh reload >/dev/null 2>&1 || sudo -n service sshd reload >/dev/null 2>&1 || true
+      forwarding_ok=1
+      restricted_ok=1
+    fi
+  else
+    rm -f "$tmp_sshd"
+    [ "$forwarding_ok" -eq 1 ] || { echo "VM service forwarding needs SSH server setup. Run host setup with a sudo-capable account, then retry." >&2; exit 1; }
+  fi
 fi
 printf 'VM service mapping host setup: ready\n'
 `, shellQuote(defaultVMBridgeNetwork))

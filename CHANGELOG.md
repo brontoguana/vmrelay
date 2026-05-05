@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.31 - 2026-05-05
+
+- Hardened VM service mapping setup so VMRelay-managed SSH reverse forwards are scoped to the remote libvirt bridge address using `PermitListen <bridge-ip>:*` when the host supports it.
+- Changed host readiness to distinguish bridge-restricted VM service forwarding from older bridge-bound forwarding, while VMRelay mappings themselves continue to bind only to the libvirt bridge address and not the public interface.
+- Added SSH config validation/restore handling so VMRelay does not leave a bad sshd drop-in behind if the host rejects the bridge-restricted forwarding config.
+
 ## 0.2.30 - 2026-05-05
 
 - Added a quiet 10-second background refresh on the host VM list so VM state changes appear without pressing `r`.
