@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed `vmrelay console` to best-effort open the generated noVNC URL in the local default browser on macOS, Linux, WSL, and Windows shell environments; set `VMRELAY_OPEN_BROWSER=0` to suppress auto-open.
+- Bumped VMRelay to `0.1.11`.
 - Fixed `vmrelay console` for Ubuntu's packaged `websockify`, which does not support the `--pid` option; VMRelay now backgrounds websockify with `nohup`, writes its own pid file, and reports the startup log if websockify exits immediately.
 - Bumped VMRelay to `0.1.10`.
 - Added `vmrelay console HOST VM_NAME [LOCAL_PORT]` to expose a libvirt VM's VNC graphics console through noVNC/websockify and an SSH local forward, so Linux and Windows guests can be accessed without guest-side RDP/SSH setup.

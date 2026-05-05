@@ -96,9 +96,16 @@ Result:
 
 ```text
 Console URL: http://127.0.0.1:4500/vnc.html?autoconnect=1&resize=scale
+Browser: requested local console URL
 ```
 
 This uses the VM's libvirt VNC display on the remote host, starts noVNC/websockify on remote `127.0.0.1`, and forwards that browser console to the local machine over SSH. It works for Linux and Windows guests because the connection is to the virtual display, not to services inside the guest OS.
+
+VMRelay opens the console URL automatically with the local OS default browser on macOS, Linux, WSL, and Windows shell environments when a suitable browser launcher is available. To suppress this for scripts or manual use:
+
+```bash
+VMRELAY_OPEN_BROWSER=0 vmrelay console box1 Draytek_VPN_virtualisation_server 4500
+```
 
 If `LOCAL_PORT` is omitted, VMRelay chooses a stable local port from the host and VM name.
 

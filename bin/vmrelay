@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.10"
+VERSION="0.1.11"
 REPO="brontoguana/vmrelay"
 RAW_SCRIPT_URL="https://api.github.com/repos/${REPO}/contents/bin/vmrelay?ref=main"
 RAW_SCRIPT_ACCEPT="Accept: application/vnd.github.raw"
@@ -28,6 +28,7 @@ CONSOLE_REMOTE_BASE_PORT="${CONSOLE_REMOTE_BASE_PORT:-6080}"
 DEFAULT_COCKPIT_REMOTE_HOST="127.0.0.1"
 DEFAULT_COCKPIT_REMOTE_PORT="9090"
 DEFAULT_VM_BRIDGE_ADDR="192.168.122.1"
+VMRELAY_OPEN_BROWSER="${VMRELAY_OPEN_BROWSER:-1}"
 
 die() {
   log_msg "ERROR: $*"
@@ -268,6 +269,46 @@ console_control_path() {
 
 console_state_path() {
   printf '%s/%s-console-%s.state' "$VMRELAY_STATE_DIR" "$1" "$(console_key "$2")"
+}
+
+open_url() {
+  url="$1"
+  [ "$VMRELAY_OPEN_BROWSER" = "0" ] && return 1
+
+  os_name="$(uname -s 2>/dev/null || printf unknown)"
+  case "$os_name" in
+    Darwin)
+      command -v open >/dev/null 2>&1 || return 1
+      open "$url" >/dev/null 2>&1
+      ;;
+    Linux)
+      for opener in xdg-open wslview sensible-browser; do
+        if command -v "$opener" >/dev/null 2>&1; then
+          "$opener" "$url" >/dev/null 2>&1 &
+          return 0
+        fi
+      done
+      if command -v gio >/dev/null 2>&1; then
+        gio open "$url" >/dev/null 2>&1 &
+        return 0
+      fi
+      if command -v cmd.exe >/dev/null 2>&1; then
+        cmd.exe /C start "" "$url" >/dev/null 2>&1
+        return 0
+      fi
+      return 1
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cmd.exe >/dev/null 2>&1; then
+        cmd.exe /C start "" "$url" >/dev/null 2>&1
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 config_signature() {
@@ -900,8 +941,16 @@ cmd_console() {
   } >"$state_file"
 
   log_msg "console started: $HOST_NAME vm=$vm_name local=${WEB_LOCAL_HOST}:$local_port remote=127.0.0.1:$remote_port"
+  console_url="http://${WEB_LOCAL_HOST}:${local_port}/vnc.html?autoconnect=1&resize=scale"
   printf '%s\n' "$output"
-  printf 'Console URL: http://%s:%s/vnc.html?autoconnect=1&resize=scale\n' "$WEB_LOCAL_HOST" "$local_port"
+  printf 'Console URL: %s\n' "$console_url"
+  if open_url "$console_url"; then
+    printf 'Browser: requested local console URL\n'
+  elif [ "$VMRELAY_OPEN_BROWSER" = "0" ]; then
+    printf 'Browser: auto-open disabled by VMRELAY_OPEN_BROWSER=0\n'
+  else
+    printf 'Browser: could not open automatically; open the Console URL manually\n'
+  fi
 }
 
 cmd_console_down() {
