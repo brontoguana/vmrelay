@@ -60,6 +60,12 @@ func TestViewFrameFillsWindow(t *testing.T) {
 	if !strings.Contains(stripANSI(lines[len(lines)-3]), "Ready.") {
 		t.Fatalf("status was not anchored above the footer: %q", lines[len(lines)-3])
 	}
+	if !strings.HasPrefix(stripANSI(lines[len(lines)-3]), "│ Ready.") {
+		t.Fatalf("status should have one space after the left border: %q", lines[len(lines)-3])
+	}
+	if !strings.HasPrefix(stripANSI(lines[len(lines)-2]), "│ ?: help") {
+		t.Fatalf("footer should have one space after the left border: %q", lines[len(lines)-2])
+	}
 	plain := stripANSI(view)
 	if strings.Count(plain, "╭") != 1 || strings.Count(plain, "╰") != 1 {
 		t.Fatalf("expected only the outer rounded border, got:\n%s", plain)

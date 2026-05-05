@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.21 - 2026-05-05
+
+- Added one-column left padding to the bottom status and key-help rows inside the TUI border.
+
 ## 0.2.20 - 2026-05-05
 
 - Fixed VM creation boot behavior for installer media: new VMs now set CDROM before hard disk in the libvirt boot order, preserving UEFI when selected.

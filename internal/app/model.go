@@ -381,7 +381,7 @@ func (m Model) View() string {
 	for len(lines) < contentH {
 		lines = append(lines, "")
 	}
-	lines = append(lines, padLine(status, innerW), padLine(footer, innerW))
+	lines = append(lines, insetLine(status, innerW), insetLine(footer, innerW))
 	return m.frame(w, h, strings.Join(lines, "\n"))
 }
 
@@ -2468,6 +2468,13 @@ func padLine(line string, width int) string {
 		line += strings.Repeat(" ", width-lineW)
 	}
 	return line
+}
+
+func insetLine(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return padLine(" "+line, width)
 }
 
 func fitLines(text string, width, height int) string {
