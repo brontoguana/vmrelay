@@ -88,6 +88,7 @@ const (
 	modeVMs
 	modeVMDetail
 	modeAddMapping
+	modeCreateVM
 	modeAddDisk
 	modeImportDisk
 	modeAddNIC
@@ -148,6 +149,17 @@ type Model struct {
 	addMapRemoteHost string
 	addMapRemotePort string
 	addMapField      int
+
+	createVMName     string
+	createVMMemory   string
+	createVMCPUs     string
+	createVMDiskSize string
+	createVMDiskBus  string
+	createVMISO      string
+	createVMNetwork  string
+	createVMFirmware string
+	createVMShared   string
+	createVMField    int
 
 	addDiskPath   string
 	addDiskSize   string
@@ -309,6 +321,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewVMDetail(innerW, contentH))
 	case modeAddMapping:
 		b.WriteString(m.viewAddMapping(innerW, contentH))
+	case modeCreateVM:
+		b.WriteString(m.viewCreateVM(innerW, contentH))
 	case modeAddDisk:
 		b.WriteString(m.viewAddDisk(innerW, contentH))
 	case modeImportDisk:
@@ -344,7 +358,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -362,6 +376,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateVMDetailKey(msg)
 	case modeAddMapping:
 		return m.updateAddMappingKey(msg)
+	case modeCreateVM:
+		return m.updateCreateVMKey(msg)
 	case modeAddDisk:
 		return m.updateAddDiskKey(msg)
 	case modeImportDisk:
@@ -553,6 +569,78 @@ func (m Model) updateAddMappingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMs
+		m.status = "Cancelled VM creation."
+		m.errText = ""
+	case "tab":
+		m.createVMField = (m.createVMField + 1) % 9
+	case "shift+tab":
+		m.createVMField = (m.createVMField + 8) % 9
+	case "enter":
+		if m.createVMField < 8 {
+			m.createVMField++
+			return m, nil
+		}
+		req, err := m.pendingVMCreate()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		return m.busy(modeVMs, "Creating VM "+req.Name+" on "+m.activeHost.Name+"...", "vm-create", func() resultMsg {
+			out, err := createVM(m.activeHost, req)
+			return resultMsg{op: "vm-create", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		switch m.createVMField {
+		case 0:
+			m.createVMName = trimLastRune(m.createVMName)
+		case 1:
+			m.createVMMemory = trimLastRune(m.createVMMemory)
+		case 2:
+			m.createVMCPUs = trimLastRune(m.createVMCPUs)
+		case 3:
+			m.createVMDiskSize = trimLastRune(m.createVMDiskSize)
+		case 4:
+			m.createVMDiskBus = trimLastRune(m.createVMDiskBus)
+		case 5:
+			m.createVMISO = trimLastRune(m.createVMISO)
+		case 6:
+			m.createVMNetwork = trimLastRune(m.createVMNetwork)
+		case 7:
+			m.createVMFirmware = trimLastRune(m.createVMFirmware)
+		case 8:
+			m.createVMShared = trimLastRune(m.createVMShared)
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			switch m.createVMField {
+			case 0:
+				m.createVMName += msg.String()
+			case 1:
+				m.createVMMemory += msg.String()
+			case 2:
+				m.createVMCPUs += msg.String()
+			case 3:
+				m.createVMDiskSize += msg.String()
+			case 4:
+				m.createVMDiskBus += msg.String()
+			case 5:
+				m.createVMISO += msg.String()
+			case 6:
+				m.createVMNetwork += msg.String()
+			case 7:
+				m.createVMFirmware += msg.String()
+			case 8:
+				m.createVMShared += msg.String()
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "b", "esc":
@@ -593,7 +681,21 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "n":
-		if m.hostTab == hostTabMappings {
+		if m.hostTab == hostTabConfig {
+			m.mode = modeCreateVM
+			m.createVMName = ""
+			m.createVMMemory = "4"
+			m.createVMCPUs = "2"
+			m.createVMDiskSize = "64"
+			m.createVMDiskBus = "sata"
+			m.createVMISO = ""
+			m.createVMNetwork = "default"
+			m.createVMFirmware = "uefi"
+			m.createVMShared = "n"
+			m.createVMField = 0
+			m.status = "Create a new VM from a remote ISO."
+			m.errText = ""
+		} else if m.hostTab == hostTabMappings {
 			m.mode = modeAddMapping
 			m.addMapName = ""
 			m.addMapLocalPort = ""
@@ -1117,6 +1219,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
 		}
 		return m.loadVMs(m.activeHost)
+	case "vm-create":
+		m.status = strings.TrimSpace(msg.output)
+		if m.status == "" {
+			m.status = "VM created."
+		}
+		m.hostTab = hostTabVMs
+		return m.loadVMs(m.activeHost)
 	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1158,6 +1267,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Mapping start failed: " + msg.err.Error()
 	case "mapping-stop":
 		return "Mapping stop failed: " + msg.err.Error()
+	case "vm-create":
+		return "VM creation failed: " + msg.err.Error()
 	case "disk-create":
 		return "Disk creation failed: " + msg.err.Error()
 	case "disk-import":
@@ -1302,10 +1413,84 @@ func (m Model) pendingMapping() (PortMapping, error) {
 	return PortMapping{ID: id, Host: m.activeHost.Name, Name: name, LocalPort: localPort, RemoteHost: remoteHost, RemotePort: remotePort}, nil
 }
 
+func (m Model) pendingVMCreate() (vmCreateRequest, error) {
+	name := strings.TrimSpace(m.createVMName)
+	if !validName(name) {
+		return vmCreateRequest{}, fmt.Errorf("VM name must use letters, numbers, dot, dash, or underscore")
+	}
+	memoryGiB, err := strconv.Atoi(strings.TrimSpace(m.createVMMemory))
+	if err != nil || memoryGiB < 1 || memoryGiB > 1024 {
+		return vmCreateRequest{}, fmt.Errorf("memory must be 1-1024 GiB")
+	}
+	cpus, err := strconv.Atoi(strings.TrimSpace(m.createVMCPUs))
+	if err != nil || cpus < 1 || cpus > 256 {
+		return vmCreateRequest{}, fmt.Errorf("CPUs must be 1-256")
+	}
+	diskGiB, err := strconv.Atoi(strings.TrimSpace(m.createVMDiskSize))
+	if err != nil || diskGiB < 1 || diskGiB > 65536 {
+		return vmCreateRequest{}, fmt.Errorf("disk size must be 1-65536 GiB")
+	}
+	diskBus := strings.ToLower(strings.TrimSpace(m.createVMDiskBus))
+	if diskBus == "" {
+		diskBus = "sata"
+	}
+	switch diskBus {
+	case "sata", "virtio", "scsi", "ide":
+	default:
+		return vmCreateRequest{}, fmt.Errorf("disk bus must be sata, virtio, scsi, or ide")
+	}
+	iso := strings.TrimSpace(m.createVMISO)
+	if err := validateRequiredAbsPath(iso, "ISO path"); err != nil {
+		return vmCreateRequest{}, err
+	}
+	network := strings.TrimSpace(m.createVMNetwork)
+	if network == "" {
+		network = "default"
+	}
+	if strings.ContainsAny(network, "\r\n\t ") {
+		return vmCreateRequest{}, fmt.Errorf("network must not contain spaces")
+	}
+	firmware := strings.ToLower(strings.TrimSpace(m.createVMFirmware))
+	if firmware == "" {
+		firmware = "uefi"
+	}
+	if firmware != "uefi" && firmware != "bios" {
+		return vmCreateRequest{}, fmt.Errorf("firmware must be uefi or bios")
+	}
+	sharedText := strings.ToLower(strings.TrimSpace(m.createVMShared))
+	shared := sharedText == "y" || sharedText == "yes" || sharedText == "true" || sharedText == "1" || sharedText == "shared"
+	if sharedText != "" && !shared && sharedText != "n" && sharedText != "no" && sharedText != "false" && sharedText != "0" && sharedText != "private" {
+		return vmCreateRequest{}, fmt.Errorf("shared must be y/n")
+	}
+	return vmCreateRequest{
+		Name:      name,
+		MemoryMiB: memoryGiB * 1024,
+		CPUs:      cpus,
+		DiskGiB:   diskGiB,
+		DiskBus:   diskBus,
+		ISO:       iso,
+		Network:   network,
+		Firmware:  firmware,
+		Shared:    shared,
+	}, nil
+}
+
 type diskCreateRequest struct {
 	SizeGiB int
 	Path    string
 	Target  string
+}
+
+type vmCreateRequest struct {
+	Name      string
+	MemoryMiB int
+	CPUs      int
+	DiskGiB   int
+	DiskBus   string
+	ISO       string
+	Network   string
+	Firmware  string
+	Shared    bool
 }
 
 type diskImportRequest struct {
@@ -1672,6 +1857,7 @@ func (m Model) viewHostConfig(width, height int) string {
 		"  Ownership:  /var/lib/vmrelay/ownership.tsv",
 		"  Setup:      press s to install/check required packages",
 		"  Check:      press r to run a host readiness check",
+		"  Create VM:  press n to create a VM from a remote ISO",
 		"",
 		"Local State",
 		"  Config:   " + m.configPath,
@@ -1679,6 +1865,23 @@ func (m Model) viewHostConfig(width, height int) string {
 		"  Theme:    " + m.config.Theme,
 	}
 	return fitLines(strings.Join(lines, "\n"), width, height)
+}
+
+func (m Model) viewCreateVM(width, height int) string {
+	cursors := []string{" ", " ", " ", " ", " ", " ", " ", " ", " "}
+	cursors[m.createVMField] = ">"
+	body := fmt.Sprintf("Create VM on %s\n\n%s Name:      %s\n%s Memory GiB:%s\n%s CPUs:      %s\n%s Disk GiB:  %s\n%s Disk bus:  %s\n%s ISO path:  %s\n%s Network:   %s\n%s Firmware:  %s\n%s Shared:    %s\n\nISO path is on the remote host. Disk bus can be sata, virtio, scsi, or ide; sata is safest for Windows installers. Firmware is uefi or bios. Shared is y/n.\nVMRelay creates /var/lib/libvirt/images/<name>.qcow2, starts a VNC install VM, and records ownership for the remote SSH user.\nEnter moves/saves. Tab switches fields. Esc cancels.",
+		m.activeHost.Name,
+		cursors[0], m.createVMName,
+		cursors[1], m.createVMMemory,
+		cursors[2], m.createVMCPUs,
+		cursors[3], m.createVMDiskSize,
+		cursors[4], m.createVMDiskBus,
+		cursors[5], m.createVMISO,
+		cursors[6], m.createVMNetwork,
+		cursors[7], m.createVMFirmware,
+		cursors[8], m.createVMShared)
+	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
 func (m Model) viewMappings(width, height int) string {
@@ -1804,7 +2007,7 @@ func (m Model) helpText() string {
 		case modeVMs:
 			switch m.hostTab {
 			case hostTabConfig:
-				return "?: help  m: themes  b: hosts  left/right: tabs  r: check  s: setup  q: quit"
+				return "?: help  m: themes  b: hosts  left/right: tabs  n: create VM  r: check  s: setup"
 			case hostTabMappings:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  q: quit"
 			default:
@@ -1824,6 +2027,8 @@ func (m Model) helpText() string {
 		case modeAddHost:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeAddMapping:
+			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeCreateVM:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeAddDisk:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
@@ -2182,6 +2387,7 @@ virsh -c qemu:///system uri >/dev/null 2>&1 && printf 'libvirt system: yes\n' ||
 [ -e /dev/kvm ] && printf 'KVM: yes\n' || printf 'KVM: missing\n'
 command -v virt-install >/dev/null && printf 'virt-install: yes\n' || printf 'virt-install: missing\n'
 command -v qemu-img >/dev/null && printf 'qemu-img: yes\n' || printf 'qemu-img: missing\n'
+if [ -d /usr/share/OVMF ] || [ -d /usr/share/ovmf ] || [ -e /usr/share/qemu/OVMF.fd ]; then printf 'OVMF/UEFI: yes\n'; else printf 'OVMF/UEFI: missing\n'; fi
 command -v websockify >/dev/null && printf 'websockify: yes\n' || printf 'websockify: missing\n'
 [ -d /usr/share/novnc ] && printf 'noVNC: yes\n' || printf 'noVNC: missing\n'
 [ -r /var/lib/vmrelay/ownership.tsv ] && printf 'VMRelay ownership: yes\n' || printf 'VMRelay ownership: not initialized\n'
@@ -2194,7 +2400,7 @@ func setupHost(h Host) (string, error) {
 set -euo pipefail
 if command -v apt-get >/dev/null 2>&1; then
   sudo -n apt-get update
-  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils novnc websockify
+  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf novnc websockify
 else
   echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/novnc/websockify manually."
 fi
@@ -2377,6 +2583,84 @@ rm -f "$tmp"
 echo "Ownership updated for %s."
 `, shellQuote(vm.UUID), shellQuote(vm.UUID), owner, shellQuote(sharedValue), vm.Name)
 	return ssh(h.Target, script, 30*time.Second)
+}
+
+func createVM(h Host, req vmCreateRequest) (string, error) {
+	sharedValue := "0"
+	if req.Shared {
+		sharedValue = "1"
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+name=%s
+memory=%d
+cpus=%d
+disk_size=%d
+disk_bus=%s
+iso=%s
+network=%s
+firmware=%s
+shared=%s
+
+command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
+command -v qemu-img >/dev/null 2>&1 || { echo "qemu-img is missing; run setup for this host." >&2; exit 1; }
+virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
+virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
+case "$iso" in /*) ;; *) echo "ISO path must be absolute: $iso" >&2; exit 1 ;; esac
+[ -e "$iso" ] || { echo "ISO path does not exist: $iso" >&2; exit 1; }
+if [ "$firmware" = "uefi" ]; then
+  if [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovmf ] && [ ! -e /usr/share/qemu/OVMF.fd ]; then
+    echo "UEFI firmware is missing; run setup or install ovmf on the host." >&2
+    exit 1
+  fi
+fi
+
+safe="$(printf '%%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
+disk="/var/lib/libvirt/images/${safe}.qcow2"
+if [ -e "$disk" ]; then echo "Disk already exists: $disk" >&2; exit 1; fi
+sudo -n install -d -m 0775 /var/lib/libvirt/images
+sudo -n qemu-img create -f qcow2 "$disk" "${disk_size}G"
+sudo -n chown libvirt-qemu:kvm "$disk" 2>/dev/null || sudo -n chown qemu:qemu "$disk" 2>/dev/null || true
+sudo -n chmod 0660 "$disk" 2>/dev/null || true
+
+args=(
+  --connect qemu:///system
+  --name "$name"
+  --memory "$memory"
+  --vcpus "$cpus"
+  --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
+  --network "network=${network},model=virtio"
+  --graphics vnc,listen=127.0.0.1
+  --video virtio
+  --cdrom "$iso"
+  --os-variant detect=on,require=off
+  --noautoconsole
+  --wait 0
+)
+if [ "$firmware" = "uefi" ]; then
+  args+=(--boot uefi)
+fi
+if ! virt-install "${args[@]}"; then
+  sudo -n rm -f "$disk" 2>/dev/null || true
+  exit 1
+fi
+
+uuid="$(virsh -c qemu:///system domuuid "$name")"
+policy=/var/lib/vmrelay/ownership.tsv
+[ -e "$policy" ] || sudo -n touch "$policy"
+tmp="$(mktemp)"
+if [ -r "$policy" ]; then awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp"; fi
+printf '%%s\t%%s\t%%s\t%%s\n' "$uuid" "$(whoami)" "$shared" '' >>"$tmp"
+if [ -w "$policy" ]; then
+  cat "$tmp" >"$policy"
+else
+  sudo -n cp "$tmp" "$policy"
+  sudo -n chmod 0664 "$policy"
+fi
+rm -f "$tmp"
+echo "Created VM ${name}. Open its console to complete the OS installer."
+`, shellQuote(req.Name), req.MemoryMiB, req.CPUs, req.DiskGiB, shellQuote(req.DiskBus), shellQuote(req.ISO), shellQuote(req.Network), shellQuote(req.Firmware), shellQuote(sharedValue))
+	return ssh(h.Target, script, 10*time.Minute)
 }
 
 func createAndAttachDisk(h Host, vmName string, req diskCreateRequest) (string, error) {

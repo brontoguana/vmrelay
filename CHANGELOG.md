@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.9 - 2026-05-05
+
+- Added host-level VM creation from the Config tab using a remote ISO path, `virt-install`, a newly created qcow2 boot disk, VNC graphics, libvirt networking, selectable disk bus, and BIOS/UEFI firmware selection.
+- Added creation-time VMRelay ownership recording so newly created VMs are owned by the current remote SSH account and can optionally be marked shared.
+- Updated apt-based host setup/readiness checks to include OVMF/UEFI firmware support.
+- Added tests for VM creation form rendering and request validation.
+
 ## 0.2.8 - 2026-05-05
 
 - Added a VM detail Disks action to set the selected disk as the VM's first boot disk in persistent libvirt configuration.

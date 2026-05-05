@@ -256,6 +256,44 @@ func TestPendingMappingValidation(t *testing.T) {
 	}
 }
 
+func TestCreateVMFormAndValidation(t *testing.T) {
+	m := Model{
+		config:           Config{Theme: "Classic"},
+		mode:             modeCreateVM,
+		activeHost:       Host{Name: "iron"},
+		createVMName:     "win10",
+		createVMMemory:   "4",
+		createVMCPUs:     "2",
+		createVMDiskSize: "64",
+		createVMDiskBus:  "sata",
+		createVMISO:      "/var/lib/libvirt/boot/windows.iso",
+		createVMNetwork:  "default",
+		createVMFirmware: "uefi",
+		createVMShared:   "n",
+	}
+	view := stripANSI(m.viewCreateVM(100, 20))
+	if !strings.Contains(view, "Create VM on iron") || !strings.Contains(view, "windows.iso") || !strings.Contains(view, "Disk bus") || !strings.Contains(view, "Firmware") {
+		t.Fatalf("create VM form missing expected content:\n%s", view)
+	}
+	req, err := m.pendingVMCreate()
+	if err != nil {
+		t.Fatalf("pendingVMCreate returned error: %v", err)
+	}
+	if req.Name != "win10" || req.MemoryMiB != 4096 || req.CPUs != 2 || req.DiskGiB != 64 || req.DiskBus != "sata" || req.Firmware != "uefi" || req.Shared {
+		t.Fatalf("unexpected create request: %#v", req)
+	}
+
+	m.createVMISO = "relative.iso"
+	if _, err := m.pendingVMCreate(); err == nil {
+		t.Fatal("expected relative ISO path to fail")
+	}
+	m.createVMISO = "/var/lib/libvirt/boot/windows.iso"
+	m.createVMFirmware = "coreboot"
+	if _, err := m.pendingVMCreate(); err == nil {
+		t.Fatal("expected unsupported firmware to fail")
+	}
+}
+
 func TestPendingDiskImportValidation(t *testing.T) {
 	m := Model{
 		importDiskSource: "/home/alice/source.vmdk",
