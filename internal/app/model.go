@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -50,6 +52,7 @@ const (
 	modeAddHost
 	modeVMs
 	modeTheme
+	modeUpdate
 	modeBusy
 )
 
@@ -73,6 +76,7 @@ type Model struct {
 	themeCursor int
 	vms         []VM
 	activeHost  Host
+	updateInfo  updateInfo
 
 	addName   string
 	addTarget string
@@ -86,10 +90,28 @@ type resultMsg struct {
 	err    error
 }
 
+type updateInfo struct {
+	Latest string
+	URL    string
+}
+
+type updateCheckMsg struct {
+	info      updateInfo
+	available bool
+	err       error
+}
+
+type updateFinishedMsg struct {
+	err error
+}
+
 var (
 	defaultWidth  = 100
 	defaultHeight = 30
 )
+
+const latestReleaseAPI = "https://api.github.com/repos/brontoguana/vmrelay/releases/latest"
+const installCommand = "curl -fsSL https://raw.githubusercontent.com/brontoguana/vmrelay/main/install.sh | bash"
 
 type theme struct {
 	Name     string
@@ -144,18 +166,28 @@ func New(version string) (Model, error) {
 	if err := saveConfig(cfgPath, cfg); err != nil {
 		return Model{}, err
 	}
+	startMode := modeHosts
+	status := "Ready."
+	if os.Getenv("VMRELAY_SKIP_UPDATE_CHECK") != "1" {
+		startMode = modeBusy
+		status = "Checking for updates..."
+	}
 	return Model{
 		version:    version,
 		configPath: cfgPath,
 		stateDir:   stateDir,
 		config:     cfg,
-		mode:       modeHosts,
-		status:     "Ready.",
+		mode:       startMode,
+		priorMode:  modeHosts,
+		status:     status,
 	}, nil
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	if os.Getenv("VMRELAY_SKIP_UPDATE_CHECK") == "1" {
+		return nil
+	}
+	return checkForUpdateCmd(m.version)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -168,6 +200,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateKey(msg)
 	case resultMsg:
 		return m.updateResult(msg)
+	case updateCheckMsg:
+		return m.updateCheck(msg)
+	case updateFinishedMsg:
+		return m.updateFinished(msg)
 	}
 	return m, nil
 }
@@ -189,6 +225,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewVMs(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
+	case modeUpdate:
+		b.WriteString(m.viewUpdatePrompt(innerW, contentH))
 	case modeBusy:
 		b.WriteString(m.viewBusy(innerW, contentH))
 	default:
@@ -230,6 +268,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateVMKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
+	case modeUpdate:
+		return m.updateUpdateKey(msg)
 	case modeBusy:
 		return m, nil
 	default:
@@ -284,6 +324,7 @@ func (m Model) updateHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", "r":
 		if h, ok := m.selectedHost(); ok {
+			m.status = "Opening " + h.Name + " VM list..."
 			return m.loadVMs(h)
 		}
 	}
@@ -446,10 +487,60 @@ func (m Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateUpdateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "y":
+		m.mode = modeBusy
+		m.priorMode = modeUpdate
+		m.status = "Updating to " + m.updateInfo.Latest + "..."
+		m.errText = ""
+		cmd := exec.Command("bash", "-lc", installCommand)
+		cmd.Env = os.Environ()
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return updateFinishedMsg{err: err}
+		})
+	case "n", "esc":
+		m.mode = modeHosts
+		m.status = "Skipped update to " + m.updateInfo.Latest + "."
+		m.errText = ""
+	}
+	return m, nil
+}
+
+func (m Model) updateCheck(msg updateCheckMsg) (tea.Model, tea.Cmd) {
+	if msg.available {
+		m.mode = modeUpdate
+		m.updateInfo = msg.info
+		m.status = "Update available: " + msg.info.Latest + "."
+		m.errText = ""
+		return m, nil
+	}
+	if msg.err != nil {
+		m.mode = modeHosts
+		m.status = "Ready. Update check unavailable."
+		return m, nil
+	}
+	m.mode = modeHosts
+	m.status = "Ready."
+	return m, nil
+}
+
+func (m Model) updateFinished(msg updateFinishedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.mode = modeUpdate
+		m.status = "Update failed."
+		m.errText = msg.err.Error()
+		return m, nil
+	}
+	m.status = "Update installed. Restarting VMRelay..."
+	m.errText = ""
+	return m, restartCmd()
+}
+
 func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	m.mode = m.priorMode
 	if msg.err != nil {
-		m.errText = msg.err.Error()
+		m.errText = failureText(msg, m)
 		if msg.output != "" {
 			m.errText += "\n" + strings.TrimSpace(msg.output)
 		}
@@ -476,6 +567,26 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func failureText(msg resultMsg, m Model) string {
+	switch msg.op {
+	case "vms":
+		if m.activeHost.Name != "" {
+			return "Failed to open " + m.activeHost.Name + ": " + msg.err.Error()
+		}
+		return "Failed to open host: " + msg.err.Error()
+	case "check":
+		return "Host check failed: " + msg.err.Error()
+	case "setup":
+		return "Host setup failed: " + msg.err.Error()
+	case "console":
+		return "Console open failed: " + msg.err.Error()
+	case "console-down":
+		return "Console stop failed: " + msg.err.Error()
+	default:
+		return msg.op + " failed: " + msg.err.Error()
+	}
 }
 
 func (m Model) busy(back mode, status, op string, fn func() resultMsg) (tea.Model, tea.Cmd) {
@@ -620,6 +731,18 @@ func (m Model) viewThemes(width, height int) string {
 	return s.pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
+func (m Model) viewUpdatePrompt(width, height int) string {
+	var b strings.Builder
+	b.WriteString("Update Available\n\n")
+	b.WriteString("Installed: " + m.version + "\n")
+	b.WriteString("Available: " + m.updateInfo.Latest + "\n")
+	if m.updateInfo.URL != "" {
+		b.WriteString("Release:   " + m.updateInfo.URL + "\n")
+	}
+	b.WriteString("\nPress Enter to update and restart VMRelay, or n to skip for now.")
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(b.String())
+}
+
 func (m Model) viewBusy(width, height int) string {
 	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render("Working\n\n" + m.status)
 }
@@ -633,8 +756,10 @@ func (m Model) helpText() string {
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
+		case modeUpdate:
+			return "enter/y: update and restart  n/esc: skip  q: quit"
 		default:
-			return "?: help  m: themes  a: add host  enter/r: view VMs  t: test  s: setup  d: remove  q: quit"
+			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
 	return "Hosts: a add, m themes, enter view, t test SSH/libvirt, s install/check host packages, d remove. VMs: p start/shutdown, f force off, o open noVNC console, x stop console, a adopt, h share/private, r refresh."
@@ -1294,6 +1419,90 @@ func openBrowser(url string) bool {
 		return false
 	}
 	return cmd.Start() == nil
+}
+
+func checkForUpdateCmd(current string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseAPI, nil)
+		if err != nil {
+			return updateCheckMsg{err: err}
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "vmrelay/"+current)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return updateCheckMsg{err: err}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return updateCheckMsg{err: fmt.Errorf("release check returned %s", resp.Status)}
+		}
+		var release struct {
+			TagName string `json:"tag_name"`
+			URL     string `json:"html_url"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			return updateCheckMsg{err: err}
+		}
+		latest := strings.TrimPrefix(strings.TrimSpace(release.TagName), "v")
+		info := updateInfo{Latest: latest, URL: release.URL}
+		return updateCheckMsg{info: info, available: versionGreater(latest, current)}
+	}
+}
+
+func restartCmd() tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return updateFinishedMsg{err: err}
+		}
+		argv := append([]string{exe}, os.Args[1:]...)
+		if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
+			return updateFinishedMsg{err: err}
+		}
+		return nil
+	}
+}
+
+func versionGreater(latest, current string) bool {
+	latestParts := versionParts(latest)
+	currentParts := versionParts(current)
+	for i := 0; i < max(len(latestParts), len(currentParts)); i++ {
+		var a, b int
+		if i < len(latestParts) {
+			a = latestParts[i]
+		}
+		if i < len(currentParts) {
+			b = currentParts[i]
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return false
+}
+
+func versionParts(version string) []int {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if version == "" {
+		return nil
+	}
+	fields := strings.Split(version, ".")
+	parts := make([]int, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		n := 0
+		for _, r := range field {
+			if r < '0' || r > '9' {
+				break
+			}
+			n = n*10 + int(r-'0')
+		}
+		parts = append(parts, n)
+	}
+	return parts
 }
 
 func max(a, b int) int {

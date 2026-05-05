@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-05-05
+
+- Added a startup GitHub release check. If a newer VMRelay release is available, the TUI asks whether to update with the release installer and restart before continuing.
+- Clarified the Hosts footer so `Enter`/`r` opens the selected host rather than implying VM console launch.
+- Improved host-open failure status text so pressing `Enter` on a host reports a visible host-specific error if VM inventory cannot load.
+- Added tests for update prompt rendering and semantic version comparison.
+
 ## 0.2.3 - 2026-05-05
 
 - Changed the TUI layout so the key-help footer is anchored at the bottom of the screen inside the outer border.

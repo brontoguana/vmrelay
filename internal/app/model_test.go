@@ -68,6 +68,54 @@ func TestThemeCatalogHasTenThemes(t *testing.T) {
 	}
 }
 
+func TestVersionGreater(t *testing.T) {
+	tests := []struct {
+		latest  string
+		current string
+		want    bool
+	}{
+		{latest: "0.2.4", current: "0.2.3", want: true},
+		{latest: "v0.2.4", current: "0.2.3", want: true},
+		{latest: "0.2.3", current: "0.2.3", want: false},
+		{latest: "0.2.3", current: "0.2.4", want: false},
+		{latest: "0.10.0", current: "0.9.9", want: true},
+	}
+	for _, test := range tests {
+		if got := versionGreater(test.latest, test.current); got != test.want {
+			t.Fatalf("versionGreater(%q, %q) = %v, want %v", test.latest, test.current, got, test.want)
+		}
+	}
+}
+
+func TestUpdatePromptRendersAvailableVersion(t *testing.T) {
+	m := Model{
+		version:    "0.2.3",
+		config:     Config{Theme: "Classic"},
+		width:      80,
+		height:     20,
+		mode:       modeUpdate,
+		updateInfo: updateInfo{Latest: "0.2.4", URL: "https://github.com/brontoguana/vmrelay/releases/tag/v0.2.4"},
+		status:     "Update available: 0.2.4.",
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Update Available") {
+		t.Fatalf("update prompt missing title:\n%s", view)
+	}
+	if !strings.Contains(view, "Installed: 0.2.3") || !strings.Contains(view, "Available: 0.2.4") {
+		t.Fatalf("update prompt missing version details:\n%s", view)
+	}
+	if !strings.Contains(view, "enter/y: update and restart") {
+		t.Fatalf("update prompt missing footer help:\n%s", view)
+	}
+}
+
+func TestVMListFailureNamesHost(t *testing.T) {
+	text := failureText(resultMsg{op: "vms", err: errTest("exit status 1")}, Model{activeHost: Host{Name: "iron"}})
+	if text != "Failed to open iron: exit status 1" {
+		t.Fatalf("unexpected failure text: %q", text)
+	}
+}
+
 func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 	m := Model{
 		config:     Config{Theme: "Classic"},
@@ -112,6 +160,10 @@ func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 		}
 	}
 }
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }
 
 func stripANSI(s string) string {
 	return ansiRE.ReplaceAllString(s, "")
