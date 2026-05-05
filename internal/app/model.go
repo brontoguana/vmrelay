@@ -3662,24 +3662,79 @@ func openConsole(h Host, vmName, stateDir string) (string, error) {
 set -euo pipefail
 vm=%s
 remote_port=%d
+
+parse_vnc_uri() {
+  uri="$1"
+  target="${uri#vnc://}"
+  target="${target%%/*}"
+  host="${target%%:*}"
+  port="${target##*:}"
+  if [ "$host" = "$port" ]; then host=127.0.0.1; fi
+  case "$port" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$port" -lt 100 ]; then port=$((5900 + port)); fi
+  printf '%%s\t%%s\n' "$host" "$port"
+}
+
+vnc_from_xml() {
+  line="$(virsh -c qemu:///system dumpxml "$vm" 2>/dev/null | grep "<graphics .*type='vnc'" | head -n 1 || true)"
+  [ -n "$line" ] || return 0
+  host="$(printf '%%s\n' "$line" | sed -n "s/.*listen='\([^']*\)'.*/\1/p")"
+  port="$(printf '%%s\n' "$line" | sed -n "s/.*[[:space:]]port='\([^']*\)'.*/\1/p")"
+  [ -n "$host" ] || host=127.0.0.1
+  case "$port" in
+    ''|-1) return 0 ;;
+  esac
+  printf '%%s\t%%s\n' "$host" "$port"
+}
+
 display="$(virsh -c qemu:///system domdisplay "$vm" 2>/dev/null || true)"
-case "$display" in
-  vnc://*)
-    target="${display#vnc://}"
-    target="${target%%/*}"
-    host="${target%%:*}"
-    port="${target##*:}"
-    if [ "$host" = "$port" ]; then host=127.0.0.1; fi
-    case "$port" in
-      ''|*[!0-9]*) echo "Unsupported VNC display: $display" >&2; exit 1 ;;
-    esac
-    if [ "$port" -lt 100 ]; then port=$((5900 + port)); fi
-    ;;
-  *)
-    echo "VM has no VNC graphics console available. Shut it down and change graphics to VNC, then retry." >&2
-    exit 1
-    ;;
+endpoint=""
+while IFS= read -r line; do
+  case "$line" in
+    vnc://*)
+      endpoint="$(parse_vnc_uri "$line" || true)"
+      [ -n "$endpoint" ] && break
+      ;;
+  esac
+done <<EOF_DISPLAY
+$display
+EOF_DISPLAY
+
+if [ -z "$endpoint" ]; then
+  endpoint="$(vnc_from_xml | awk 'NF { print; exit }')"
+fi
+
+if [ -z "$endpoint" ]; then
+  state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+  inactive_vnc="$(virsh -c qemu:///system dumpxml --inactive "$vm" 2>/dev/null | awk '/<graphics / && /type=.vnc./ { found=1 } END { print found ? "yes" : "" }')"
+  case "$state" in
+    running*)
+      if [ "$inactive_vnc" = "yes" ]; then
+        echo "VM has VNC graphics configured, but no live VNC port is available. Restart the VM once, then retry console open." >&2
+      else
+        echo "VM is running without a live VNC graphics console. Shut it down, add VNC graphics, start it, then retry." >&2
+      fi
+      ;;
+    "")
+      echo "VM not found or libvirt could not read its state: ${vm}" >&2
+      ;;
+    *)
+      echo "VM is not running (${state}). Start it, then open the console." >&2
+      ;;
+  esac
+  exit 1
+fi
+
+host="$(printf '%%s\n' "$endpoint" | awk -F '\t' '{ print $1 }')"
+port="$(printf '%%s\n' "$endpoint" | awk -F '\t' '{ print $2 }')"
+[ -n "$host" ] || host=127.0.0.1
+case "$port" in
+  ''|*[!0-9]*) echo "Unsupported VNC display port: ${port}" >&2; exit 1 ;;
 esac
+if [ "$port" -lt 100 ]; then port=$((5900 + port)); fi
+
 [ -d /usr/share/novnc ] || { echo "noVNC is missing; run setup for this host." >&2; exit 1; }
 command -v websockify >/dev/null 2>&1 || { echo "websockify is missing; run setup for this host." >&2; exit 1; }
 pidfile="/tmp/vmrelay-novnc-${remote_port}.pid"

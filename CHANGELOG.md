@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.23 - 2026-05-05
+
+- Made console opening more tolerant when `virsh domdisplay` does not return a clean VNC URL by falling back to the live libvirt XML `<graphics type='vnc'>` port.
+- Improved console-open failures so stopped, missing, and running-without-live-VNC VMs report distinct actionable messages instead of the generic no-VNC error.
+- Verified the VNC XML parser read the live VNC endpoint correctly on `iron` and ignored a shut-off VM's unallocated `port='-1'` graphics definition.
+
 ## 0.2.22 - 2026-05-05
 
 - Added a VM detail Actions tab duplicate flow: press `d`, enter a new VM name, and VMRelay clones the powered-off VM with `virt-clone`.
