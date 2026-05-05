@@ -699,19 +699,29 @@ virsh -c qemu:///system list --all --name | sed '/^$/d' | while IFS= read -r nam
       shared="$(printf '%s\n' "$line" | awk -F '\t' '{print $3}')"
     fi
   fi
-  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$uuid" "$state" "$owner" "$shared"
+  printf 'VMRELAY_VM\t%s\t%s\t%s\t%s\t%s\n' "$name" "$uuid" "$state" "$owner" "$shared"
 done
 `
 	out, err := ssh(h.Target, script, 45*time.Second)
 	if err != nil {
 		return nil, out, err
 	}
+	vms := parseVMListOutput(out)
+	sort.Slice(vms, func(i, j int) bool { return vms[i].Name < vms[j].Name })
+	return vms, out, nil
+}
+
+func parseVMListOutput(out string) []VM {
 	var vms []VM
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		parts := strings.Split(line, "\t")
+		if len(parts) == 0 || parts[0] != "VMRELAY_VM" {
+			continue
+		}
+		parts = parts[1:]
 		for len(parts) < 5 {
 			parts = append(parts, "")
 		}
@@ -723,8 +733,7 @@ done
 			Shared: parts[4] == "1" || strings.EqualFold(parts[4], "true"),
 		})
 	}
-	sort.Slice(vms, func(i, j int) bool { return vms[i].Name < vms[j].Name })
-	return vms, out, nil
+	return vms
 }
 
 func lifecycle(h Host, vmName, action string) (string, error) {
@@ -940,15 +949,22 @@ func ssh(target, script string, timeout time.Duration) (string, error) {
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 		target,
-		"bash", "-lc", script,
+		"bash", "-s",
 	}
-	return runCommand(timeout, "ssh", args...)
+	return runCommandInput(timeout, script, "ssh", args...)
 }
 
 func runCommand(timeout time.Duration, name string, args ...string) (string, error) {
+	return runCommandInput(timeout, "", name, args...)
+}
+
+func runCommandInput(timeout time.Duration, input, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return string(out), fmt.Errorf("%s timed out", name)

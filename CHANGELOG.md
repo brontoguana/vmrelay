@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-05-05
+
+- Fixed remote SSH script execution in the Go TUI by sending scripts to `bash -s` over stdin instead of passing them through `bash -lc`, preventing remote shell diagnostics from being emitted during VM inventory.
+- Hardened VM inventory parsing with explicit `VMRELAY_VM` record prefixes so command diagnostics cannot appear as fake VM rows.
+- Added a focused parser test for ignoring remote diagnostics such as `bash: -c: option requires an argument`.
+
 ## 0.2.0 - 2026-05-05
 
 - Built the first Go/Bubble Tea VMRelay TUI MVP as `vmrelay 0.2.0`, with host management, SSH host checks/setup, system-libvirt VM inventory, lifecycle actions, VM ownership/share state, and loopback noVNC console launch.
