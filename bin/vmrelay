@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.8"
+VERSION="0.1.9"
 REPO="brontoguana/vmrelay"
 RAW_SCRIPT_URL="https://api.github.com/repos/${REPO}/contents/bin/vmrelay?ref=main"
 RAW_SCRIPT_ACCEPT="Accept: application/vnd.github.raw"
@@ -23,6 +23,8 @@ VMRELAY_CLEANUP_FILES=
 
 WEB_LOCAL_HOST="${WEB_LOCAL_HOST:-127.0.0.1}"
 WEB_LOCAL_BASE_PORT="${WEB_LOCAL_BASE_PORT:-4400}"
+CONSOLE_LOCAL_BASE_PORT="${CONSOLE_LOCAL_BASE_PORT:-4500}"
+CONSOLE_REMOTE_BASE_PORT="${CONSOLE_REMOTE_BASE_PORT:-6080}"
 DEFAULT_COCKPIT_REMOTE_HOST="127.0.0.1"
 DEFAULT_COCKPIT_REMOTE_PORT="9090"
 DEFAULT_VM_BRIDGE_ADDR="192.168.122.1"
@@ -168,6 +170,8 @@ Usage:
   vmrelay host HOST
   vmrelay inbound HOST LOCAL_PORT REMOTE_PORT
   vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
+  vmrelay console HOST VM_NAME [LOCAL_PORT]
+  vmrelay console-down HOST VM_NAME
   vmrelay setup HOST
   vmrelay up HOST
   vmrelay resume
@@ -180,6 +184,7 @@ Usage:
 Examples:
   vmrelay addhost box1 user@remote-box
   vmrelay setup box1
+  vmrelay console box1 win10
   vmrelay inbound box1 8080 18080
   vmrelay up box1
   vmrelay status box1
@@ -235,6 +240,12 @@ shell_escape_dq() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
+shell_quote_sq() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 host_config_path() {
   printf '%s/%s.conf' "$HOSTS_DIR" "$1"
 }
@@ -245,6 +256,18 @@ control_path() {
 
 signature_path() {
   printf '%s/%s.sig' "$VMRELAY_STATE_DIR" "$1"
+}
+
+console_key() {
+  printf '%s' "$1" | cksum | awk '{print $1}'
+}
+
+console_control_path() {
+  printf '%s/%s-console-%s.ctl' "$VMRELAY_STATE_DIR" "$1" "$(console_key "$2")"
+}
+
+console_state_path() {
+  printf '%s/%s-console-%s.state' "$VMRELAY_STATE_DIR" "$1" "$(console_key "$2")"
 }
 
 config_signature() {
@@ -289,6 +312,20 @@ web_port() {
 
 web_url() {
   printf 'http://%s:%s\n' "$WEB_LOCAL_HOST" "$(web_port)"
+}
+
+console_vm_port_slot() {
+  printf '%s' "$1" | cksum | awk '{print $1 % 1000}'
+}
+
+default_console_local_port() {
+  slot="$(console_vm_port_slot "$1")"
+  printf '%s\n' "$((CONSOLE_LOCAL_BASE_PORT + (WEB_PORT_OFFSET * 1000) + slot))"
+}
+
+default_console_remote_port() {
+  slot="$(console_vm_port_slot "$1")"
+  printf '%s\n' "$((CONSOLE_REMOTE_BASE_PORT + (WEB_PORT_OFFSET * 1000) + slot))"
 }
 
 list_host_names() {
@@ -666,6 +703,215 @@ cmd_outbound() {
   printf 'Outbound mapping: local %s:%s -> remote 127.0.0.1:%s\n' "$WEB_LOCAL_HOST" "$2" "$3"
 }
 
+remote_console_script() {
+  vm_name="$1"
+  novnc_port="$2"
+  {
+    printf 'VMRELAY_VM_NAME=%s\n' "$(shell_quote_sq "$vm_name")"
+    printf 'VMRELAY_NOVNC_PORT=%s\n' "$(shell_quote_sq "$novnc_port")"
+    cat <<'REMOTE'
+set -eu
+
+vm_name=$VMRELAY_VM_NAME
+novnc_port=$VMRELAY_NOVNC_PORT
+
+case "$novnc_port" in
+  ''|*[!0-9]*)
+    echo "invalid noVNC port: $novnc_port" >&2
+    exit 1
+    ;;
+esac
+
+if ! command -v virsh >/dev/null 2>&1; then
+  echo "virsh is missing; run vmrelay setup for this host" >&2
+  exit 1
+fi
+
+if ! command -v websockify >/dev/null 2>&1; then
+  echo "websockify is missing; run vmrelay setup for this host" >&2
+  exit 1
+fi
+
+novnc_web=
+for dir in /usr/share/novnc /usr/share/novnc-py; do
+  if [ -f "$dir/vnc.html" ] || [ -f "$dir/index.html" ]; then
+    novnc_web=$dir
+    break
+  fi
+done
+[ -n "$novnc_web" ] || {
+  echo "noVNC web files are missing; run vmrelay setup for this host" >&2
+  exit 1
+}
+
+virsh_cmd='virsh -c qemu:///system'
+if ! $virsh_cmd dominfo "$vm_name" >/dev/null 2>&1; then
+  echo "VM does not exist on qemu:///system: $vm_name" >&2
+  echo "Available VMs:" >&2
+  $virsh_cmd list --all --name 2>/dev/null | sed '/^$/d; s/^/  /' >&2 || true
+  exit 1
+fi
+
+state=$($virsh_cmd domstate "$vm_name" 2>/dev/null || echo unknown)
+display=$($virsh_cmd domdisplay "$vm_name" 2>/dev/null | awk '/^vnc:\/\// {print; exit}')
+
+if [ -z "$display" ]; then
+  if command -v virt-xml >/dev/null 2>&1; then
+    if [ "$state" = "running" ]; then
+      if virt-xml -c qemu:///system "$vm_name" --edit --graphics vnc,listen=127.0.0.1 --update >/dev/null 2>&1 ||
+        virt-xml -c qemu:///system "$vm_name" --add-device --graphics vnc,listen=127.0.0.1 --update >/dev/null 2>&1; then
+        display=$($virsh_cmd domdisplay "$vm_name" 2>/dev/null | awk '/^vnc:\/\// {print; exit}')
+      fi
+    else
+      virt-xml -c qemu:///system "$vm_name" --edit --graphics vnc,listen=127.0.0.1 >/dev/null 2>&1 ||
+        virt-xml -c qemu:///system "$vm_name" --add-device --graphics vnc,listen=127.0.0.1 >/dev/null
+      $virsh_cmd start "$vm_name" >/dev/null
+      sleep 2
+      display=$($virsh_cmd domdisplay "$vm_name" 2>/dev/null | awk '/^vnc:\/\// {print; exit}')
+    fi
+  fi
+fi
+
+if [ -z "$display" ]; then
+  echo "VM has no VNC graphics console available." >&2
+  echo "If it is currently using SPICE, shut the VM down and rerun this command so VMRelay can switch it to VNC." >&2
+  exit 1
+fi
+
+vnc_display=${display##*:}
+case "$vnc_display" in
+  ''|*[!0-9]*)
+    echo "could not parse VNC display from: $display" >&2
+    exit 1
+    ;;
+esac
+if [ "$vnc_display" -lt 100 ]; then
+  vnc_port=$((5900 + vnc_display))
+else
+  vnc_port=$vnc_display
+fi
+
+pid_file="/tmp/vmrelay-novnc-${novnc_port}.pid"
+if [ -r "$pid_file" ]; then
+  old_pid=$(cat "$pid_file" 2>/dev/null || true)
+  case "$old_pid" in
+    ''|*[!0-9]*) ;;
+    *) kill "$old_pid" 2>/dev/null || true ;;
+  esac
+  sleep 1
+  rm -f "$pid_file"
+fi
+
+websockify --daemon --pid "$pid_file" --web "$novnc_web" "127.0.0.1:${novnc_port}" "127.0.0.1:${vnc_port}" >/dev/null
+sleep 1
+
+if [ ! -r "$pid_file" ]; then
+  echo "websockify did not create a pid file at $pid_file" >&2
+  exit 1
+fi
+
+echo "VM: $vm_name"
+echo "VM state: $state"
+echo "VNC display: $display"
+echo "VNC target: 127.0.0.1:$vnc_port"
+echo "noVNC remote: 127.0.0.1:$novnc_port"
+REMOTE
+  } | ssh -T $(ssh_base_opts) "$SSH_TARGET" 'bash -s'
+}
+
+remote_console_stop() {
+  novnc_port="$1"
+  {
+    printf 'VMRELAY_NOVNC_PORT=%s\n' "$(shell_quote_sq "$novnc_port")"
+    cat <<'REMOTE'
+set -eu
+novnc_port=$VMRELAY_NOVNC_PORT
+pid_file="/tmp/vmrelay-novnc-${novnc_port}.pid"
+if [ -r "$pid_file" ]; then
+  old_pid=$(cat "$pid_file" 2>/dev/null || true)
+  case "$old_pid" in
+    ''|*[!0-9]*) ;;
+    *) kill "$old_pid" 2>/dev/null || true ;;
+  esac
+  rm -f "$pid_file"
+fi
+REMOTE
+  } | ssh -T $(ssh_base_opts) "$SSH_TARGET" 'bash -s' >/dev/null 2>&1 || true
+}
+
+console_tunnel_running() {
+  ctl="$1"
+  [ -S "$ctl" ] || return 1
+  ssh -S "$ctl" -O check "$SSH_TARGET" >/dev/null 2>&1
+}
+
+cmd_console() {
+  [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || die "usage: vmrelay console HOST VM_NAME [LOCAL_PORT]"
+  load_host "$1"
+  ensure_dirs
+  vm_name="$2"
+  local_port="${3:-$(default_console_local_port "$vm_name")}"
+  remote_port="$(default_console_remote_port "$vm_name")"
+  valid_port "$local_port" || die "invalid local port: $local_port"
+  valid_port "$remote_port" || die "invalid remote console port: $remote_port"
+
+  output="$(remote_console_script "$vm_name" "$remote_port")"
+
+  ctl="$(console_control_path "$HOST_NAME" "$vm_name")"
+  if console_tunnel_running "$ctl"; then
+    ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+  fi
+  rm -f "$ctl"
+
+  ssh -f -N -M -S "$ctl" \
+    $(ssh_base_opts) \
+    -o ControlPersist=yes \
+    -o ExitOnForwardFailure=yes \
+    -L "${WEB_LOCAL_HOST}:${local_port}:127.0.0.1:${remote_port}" \
+    "$SSH_TARGET"
+
+  if ! console_tunnel_running "$ctl"; then
+    die "failed to start console tunnel for $HOST_NAME / $vm_name"
+  fi
+
+  state_file="$(console_state_path "$HOST_NAME" "$vm_name")"
+  {
+    printf 'VM_NAME="%s"\n' "$(shell_escape_dq "$vm_name")"
+    printf 'LOCAL_PORT=%s\n' "$local_port"
+    printf 'REMOTE_PORT=%s\n' "$remote_port"
+  } >"$state_file"
+
+  log_msg "console started: $HOST_NAME vm=$vm_name local=${WEB_LOCAL_HOST}:$local_port remote=127.0.0.1:$remote_port"
+  printf '%s\n' "$output"
+  printf 'Console URL: http://%s:%s/vnc.html?autoconnect=1&resize=scale\n' "$WEB_LOCAL_HOST" "$local_port"
+}
+
+cmd_console_down() {
+  [ "$#" -eq 2 ] || die "usage: vmrelay console-down HOST VM_NAME"
+  load_host "$1"
+  ensure_dirs
+  vm_name="$2"
+  ctl="$(console_control_path "$HOST_NAME" "$vm_name")"
+  state_file="$(console_state_path "$HOST_NAME" "$vm_name")"
+  remote_port="$(default_console_remote_port "$vm_name")"
+  valid_port "$remote_port" || die "invalid remote console port: $remote_port"
+
+  if [ -r "$state_file" ]; then
+    REMOTE_PORT=
+    # shellcheck disable=SC1090
+    . "$state_file"
+    [ -n "${REMOTE_PORT:-}" ] && remote_port="$REMOTE_PORT"
+  fi
+
+  if console_tunnel_running "$ctl"; then
+    ssh -S "$ctl" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+  fi
+  rm -f "$ctl" "$state_file"
+  remote_console_stop "$remote_port"
+  log_msg "console stopped: $HOST_NAME vm=$vm_name"
+  printf 'Console stopped for %s / %s\n' "$HOST_NAME" "$vm_name"
+}
+
 cmd_up() {
   [ "$#" -eq 1 ] || die "usage: vmrelay up HOST"
   start_tunnel "$1"
@@ -867,6 +1113,8 @@ sudo_do env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   virtinst \
   cockpit \
   cockpit-machines \
+  novnc \
+  websockify \
   openssh-server
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -987,7 +1235,7 @@ cmd_update() {
 
 command_needs_lock() {
   case "$1" in
-    addhost|removehost|inbound|outbound|setup|up|resume|status|down|update)
+    addhost|removehost|inbound|outbound|console|console-down|setup|up|resume|status|down|update)
       return 0
       ;;
     *)
@@ -1034,6 +1282,8 @@ main() {
     host) cmd_host "$@" ;;
     inbound) cmd_inbound "$@" ;;
     outbound) cmd_outbound "$@" ;;
+    console) cmd_console "$@" ;;
+    console-down) cmd_console_down "$@" ;;
     setup) cmd_setup "$@" ;;
     up) cmd_up "$@" ;;
     resume) cmd_resume "$@" ;;

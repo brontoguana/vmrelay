@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added `vmrelay console HOST VM_NAME [LOCAL_PORT]` to expose a libvirt VM's VNC graphics console through noVNC/websockify and an SSH local forward, so Linux and Windows guests can be accessed without guest-side RDP/SSH setup.
+- Added `vmrelay console-down HOST VM_NAME` to stop the console-specific SSH tunnel and remote noVNC proxy.
+- Changed `setup HOST` to install `novnc` and `websockify` on Ubuntu/Debian hosts.
+- Bumped VMRelay to `0.1.9`.
 - Added a clearer README description explaining that VMRelay uses a normal remote Linux box as a VM server without fully converting it into a Proxmox-style appliance.
 - Changed the GitHub repository visibility from private to public.
 - Changed the README installer to use the public GitHub contents API with `curl`, so install no longer requires authenticated `gh`.

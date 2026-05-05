@@ -2,7 +2,7 @@
 
 VMRelay makes it easy to use a remote Linux box as a VM server without fully converting that machine into a dedicated virtualization appliance like Proxmox. It keeps the remote box as a normal Linux host, then uses Bash, OpenSSH, KVM/libvirt, and Cockpit to provide a private web UI and tunnelled access from your local Linux or macOS machine.
 
-VMRelay sets up KVM/libvirt/Cockpit on a remote Ubuntu host, keeps Cockpit private on the remote loopback interface, and creates local SSH forwards for the web UI and configured TCP mappings.
+VMRelay sets up KVM/libvirt/Cockpit on a remote Ubuntu host, keeps Cockpit private on the remote loopback interface, creates local SSH forwards for the web UI and configured TCP mappings, and can expose VM graphical consoles through a local browser using noVNC.
 
 ## Install
 
@@ -45,6 +45,8 @@ vmrelay hosts
 vmrelay host HOST
 vmrelay inbound HOST LOCAL_PORT REMOTE_PORT
 vmrelay outbound HOST LOCAL_PORT REMOTE_PORT
+vmrelay console HOST VM_NAME [LOCAL_PORT]
+vmrelay console-down HOST VM_NAME
 vmrelay setup HOST
 vmrelay up HOST
 vmrelay resume
@@ -81,6 +83,32 @@ local 127.0.0.1:15432 -> remote 127.0.0.1:5432
 ```
 
 If a VMRelay-managed tunnel is already running, mapping commands update the host config and restart that host's managed tunnel so the change applies immediately.
+
+## VM Consoles
+
+VMRelay can expose a libvirt VM's graphical console in a local browser without requiring RDP, SSH, or any agent inside the guest:
+
+```bash
+vmrelay console box1 Draytek_VPN_virtualisation_server 4500
+```
+
+Result:
+
+```text
+Console URL: http://127.0.0.1:4500/vnc.html?autoconnect=1&resize=scale
+```
+
+This uses the VM's libvirt VNC display on the remote host, starts noVNC/websockify on remote `127.0.0.1`, and forwards that browser console to the local machine over SSH. It works for Linux and Windows guests because the connection is to the virtual display, not to services inside the guest OS.
+
+If `LOCAL_PORT` is omitted, VMRelay chooses a stable local port from the host and VM name.
+
+If a VM was created with SPICE graphics, VMRelay can switch it to VNC automatically when the VM is shut down. For a running SPICE-only VM, shut the VM down and rerun the console command.
+
+To stop the console tunnel and remote noVNC proxy:
+
+```bash
+vmrelay console-down box1 Draytek_VPN_virtualisation_server
+```
 
 ## Tunnel Maintenance
 
