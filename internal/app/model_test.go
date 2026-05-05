@@ -336,6 +336,15 @@ func TestErrorSummarySkipsWarningsAfterExitStatus(t *testing.T) {
 	}
 }
 
+func TestCreateVMBootOptionBootsInstallerMediaFirst(t *testing.T) {
+	if got := createVMBootOption("uefi"); got != "uefi,cdrom,hd" {
+		t.Fatalf("UEFI boot option = %q", got)
+	}
+	if got := createVMBootOption("bios"); got != "cdrom,hd" {
+		t.Fatalf("BIOS boot option = %q", got)
+	}
+}
+
 func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 	m := Model{
 		config:           Config{Theme: "Classic"},

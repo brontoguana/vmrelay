@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.20 - 2026-05-05
+
+- Fixed VM creation boot behavior for installer media: new VMs now set CDROM before hard disk in the libvirt boot order, preserving UEFI when selected.
+- Sent an initial boot key after `virt-install` starts the guest so Windows installer ISOs do not time out at the short “press any key to boot from CD/DVD” prompt before the noVNC console is opened.
+- Recovered the newly created `Win10-Orig` VM on `iron` by backing up its XML, setting CDROM boot order `1` and disk boot order `2`, restarting it, and sending the initial boot key; screenshots showed the Windows installer media loading instead of the UEFI shell.
+
 ## 0.2.19 - 2026-05-05
 
 - Improved the create-VM name field so normal VM names can be up to 80 characters instead of feeling visually capped by the narrow form row.

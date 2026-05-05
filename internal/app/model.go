@@ -3038,6 +3038,7 @@ func createVM(h Host, req vmCreateRequest) (string, error) {
 	if req.Shared {
 		sharedValue = "1"
 	}
+	bootOption := createVMBootOption(req.Firmware)
 	script := fmt.Sprintf(`
 set -euo pipefail
 name=%s
@@ -3049,6 +3050,7 @@ iso=%s
 network=%s
 firmware=%s
 shared=%s
+boot_option=%s
 
 case "$iso" in
   "~") iso="$HOME" ;;
@@ -3157,16 +3159,18 @@ args=(
   --video virtio
   --cdrom "$install_iso"
   --os-variant detect=on,require=off
+  --boot "$boot_option"
   --noautoconsole
 )
-if [ "$firmware" = "uefi" ]; then
-  args+=(--boot uefi)
-fi
 if ! virt-install "${args[@]}"; then
   virsh -c qemu:///system vol-delete --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1 || true
   exit 1
 fi
 vm_created=1
+for _ in 1 2 3; do
+  sleep 1
+  virsh -c qemu:///system send-key "$name" KEY_SPACE >/dev/null 2>&1 || true
+done
 
 uuid="$(virsh -c qemu:///system domuuid "$name")"
 policy=/var/lib/vmrelay/ownership.tsv
@@ -3188,8 +3192,15 @@ else
 fi
 echo "Created VM ${name}. Open its console to complete the OS installer."
 [ -z "$policy_note" ] || echo "$policy_note"
-`, shellQuote(req.Name), req.MemoryMiB, req.CPUs, req.DiskGiB, shellQuote(req.DiskBus), shellQuote(req.ISO), shellQuote(req.Network), shellQuote(req.Firmware), shellQuote(sharedValue))
+`, shellQuote(req.Name), req.MemoryMiB, req.CPUs, req.DiskGiB, shellQuote(req.DiskBus), shellQuote(req.ISO), shellQuote(req.Network), shellQuote(req.Firmware), shellQuote(sharedValue), shellQuote(bootOption))
 	return ssh(h.Target, script, 10*time.Minute)
+}
+
+func createVMBootOption(firmware string) string {
+	if strings.EqualFold(firmware, "uefi") {
+		return "uefi,cdrom,hd"
+	}
+	return "cdrom,hd"
 }
 
 func createAndAttachDisk(h Host, vmName string, req diskCreateRequest) (string, error) {
