@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.24 - 2026-05-05
+
+- Fixed Windows installer VM creation more robustly by rewriting the created domain XML to use device-level CDROM boot order `1` and disk boot order `2`, instead of relying on generic `<os><boot dev='cdrom'/>` entries from `virt-install`.
+- Restarted new UEFI installer VMs with reset NVRAM after applying boot order, then sent the initial boot key so Windows ISO prompts are caught reliably.
+- Recovered `Win11-Orig` on `iron` by backing up its XML, applying device-level boot order, resetting NVRAM, restarting it, and verifying by screenshot that it reached the Windows 11 Setup product-key screen.
+
 ## 0.2.23 - 2026-05-05
 
 - Made console opening more tolerant when `virsh domdisplay` does not return a clean VNC URL by falling back to the live libvirt XML `<graphics type='vnc'>` port.

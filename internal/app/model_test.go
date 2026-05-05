@@ -418,8 +418,8 @@ func TestErrorSummarySkipsWarningsAfterExitStatus(t *testing.T) {
 	}
 }
 
-func TestCreateVMBootOptionBootsInstallerMediaFirst(t *testing.T) {
-	if got := createVMBootOption("uefi"); got != "uefi,cdrom,hd" {
+func TestCreateVMBootOptionPreservesFirmwareMode(t *testing.T) {
+	if got := createVMBootOption("uefi"); got != "uefi" {
 		t.Fatalf("UEFI boot option = %q", got)
 	}
 	if got := createVMBootOption("bios"); got != "cdrom,hd" {

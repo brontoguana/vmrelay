@@ -2836,6 +2836,7 @@ virsh -c qemu:///system uri >/dev/null 2>&1 && printf 'libvirt system: yes\n' ||
 command -v virt-install >/dev/null && printf 'virt-install: yes\n' || printf 'virt-install: missing\n'
 command -v virt-clone >/dev/null && printf 'virt-clone: yes\n' || printf 'virt-clone: missing\n'
 command -v qemu-img >/dev/null && printf 'qemu-img: yes\n' || printf 'qemu-img: missing\n'
+command -v python3 >/dev/null && printf 'python3: yes\n' || printf 'python3: missing\n'
 if [ -d /usr/share/OVMF ] || [ -d /usr/share/ovmf ] || [ -e /usr/share/qemu/OVMF.fd ]; then printf 'OVMF/UEFI: yes\n'; else printf 'OVMF/UEFI: missing\n'; fi
 command -v websockify >/dev/null && printf 'websockify: yes\n' || printf 'websockify: missing\n'
 [ -d /usr/share/novnc ] && printf 'noVNC: yes\n' || printf 'noVNC: missing\n'
@@ -2859,9 +2860,9 @@ func setupHost(h Host) (string, error) {
 set -euo pipefail
 if command -v apt-get >/dev/null 2>&1; then
   sudo -n apt-get update
-  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf novnc websockify
+  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf novnc websockify python3
 else
-  echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/novnc/websockify manually."
+  echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/novnc/websockify/python3 manually."
 fi
 group=libvirt
 if ! getent group "$group" >/dev/null 2>&1; then group=libvirt-qemu; fi
@@ -3166,6 +3167,7 @@ case "$iso" in
 esac
 
 command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to set installer boot order." >&2; exit 1; }
 virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
 virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
 [ -e "$iso" ] || { echo "ISO path does not exist: $iso" >&2; exit 1; }
@@ -3253,6 +3255,51 @@ stage_iso() {
 install_iso="$(stage_iso "$iso")"
 [ -n "$install_iso" ] || { echo "Could not resolve staged ISO path for ${iso}." >&2; exit 1; }
 
+set_installer_boot_order() {
+  vm="$1"
+  xml="$(mktemp)"
+  tmp="$xml"
+  virsh -c qemu:///system dumpxml "$vm" >"$xml"
+  python3 - "$xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+tree = ET.parse(path)
+root = tree.getroot()
+
+os_el = root.find("os")
+if os_el is not None:
+    for boot in list(os_el.findall("boot")):
+        os_el.remove(boot)
+
+devices = root.find("devices")
+first_disk = None
+cdrom = None
+if devices is not None:
+    for disk in devices.findall("disk"):
+        for boot in list(disk.findall("boot")):
+            disk.remove(boot)
+        device = disk.get("device")
+        if device == "cdrom" and disk.find("source") is not None and cdrom is None:
+            cdrom = disk
+        elif device == "disk" and first_disk is None:
+            first_disk = disk
+
+if cdrom is None:
+    sys.stderr.write("Could not find attached installer CDROM in VM XML.\n")
+    sys.exit(2)
+ET.SubElement(cdrom, "boot", {"order": "1"})
+if first_disk is not None:
+    ET.SubElement(first_disk, "boot", {"order": "2"})
+
+tree.write(path, encoding="unicode")
+PY
+  virsh -c qemu:///system define "$xml" >/dev/null
+  rm -f "$xml"
+  tmp=""
+}
+
 args=(
   --connect qemu:///system
   --name "$name"
@@ -3273,6 +3320,15 @@ if ! virt-install "${args[@]}"; then
   exit 1
 fi
 vm_created=1
+set_installer_boot_order "$name"
+if virsh -c qemu:///system domstate "$name" 2>/dev/null | grep -qi '^running'; then
+  virsh -c qemu:///system destroy "$name" >/dev/null
+fi
+if [ "$firmware" = "uefi" ]; then
+  virsh -c qemu:///system start "$name" --reset-nvram >/dev/null
+else
+  virsh -c qemu:///system start "$name" >/dev/null
+fi
 for _ in 1 2 3; do
   sleep 1
   virsh -c qemu:///system send-key "$name" KEY_SPACE >/dev/null 2>&1 || true
@@ -3304,7 +3360,7 @@ echo "Created VM ${name}. Open its console to complete the OS installer."
 
 func createVMBootOption(firmware string) string {
 	if strings.EqualFold(firmware, "uefi") {
-		return "uefi,cdrom,hd"
+		return "uefi"
 	}
 	return "cdrom,hd"
 }
