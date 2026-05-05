@@ -40,6 +40,7 @@ type VM struct {
 type Config struct {
 	Version int    `json:"version"`
 	Hosts   []Host `json:"hosts"`
+	Theme   string `json:"theme,omitempty"`
 }
 
 type mode int
@@ -48,6 +49,7 @@ const (
 	modeHosts mode = iota
 	modeAddHost
 	modeVMs
+	modeTheme
 	modeBusy
 )
 
@@ -58,15 +60,19 @@ type Model struct {
 	stateDir   string
 	config     Config
 
-	mode       mode
-	priorMode  mode
-	status     string
-	errText    string
-	help       bool
-	hostCursor int
-	vmCursor   int
-	vms        []VM
-	activeHost Host
+	width       int
+	height      int
+	mode        mode
+	priorMode   mode
+	themeBack   mode
+	status      string
+	errText     string
+	help        bool
+	hostCursor  int
+	vmCursor    int
+	themeCursor int
+	vms         []VM
+	activeHost  Host
 
 	addName   string
 	addTarget string
@@ -81,12 +87,43 @@ type resultMsg struct {
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Padding(0, 1)
-	paneStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	faintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	defaultWidth  = 100
+	defaultHeight = 30
 )
+
+type theme struct {
+	Name     string
+	Accent   lipgloss.Color
+	Border   lipgloss.Color
+	Text     lipgloss.Color
+	Muted    lipgloss.Color
+	OK       lipgloss.Color
+	Error    lipgloss.Color
+	Selected lipgloss.Color
+}
+
+var themes = []theme{
+	{Name: "Classic", Accent: "62", Border: "238", Text: "230", Muted: "244", OK: "42", Error: "196", Selected: "62"},
+	{Name: "Ocean", Accent: "39", Border: "31", Text: "255", Muted: "110", OK: "77", Error: "203", Selected: "31"},
+	{Name: "Forest", Accent: "70", Border: "65", Text: "255", Muted: "108", OK: "114", Error: "203", Selected: "64"},
+	{Name: "Amber", Accent: "214", Border: "130", Text: "255", Muted: "180", OK: "112", Error: "196", Selected: "172"},
+	{Name: "Graphite", Accent: "250", Border: "239", Text: "255", Muted: "245", OK: "79", Error: "203", Selected: "241"},
+	{Name: "Ruby", Accent: "197", Border: "125", Text: "255", Muted: "181", OK: "78", Error: "203", Selected: "125"},
+	{Name: "Violet", Accent: "141", Border: "97", Text: "255", Muted: "146", OK: "78", Error: "203", Selected: "97"},
+	{Name: "Cyan", Accent: "44", Border: "37", Text: "255", Muted: "116", OK: "83", Error: "203", Selected: "37"},
+	{Name: "Mono", Accent: "255", Border: "246", Text: "255", Muted: "244", OK: "255", Error: "203", Selected: "238"},
+	{Name: "Night", Accent: "111", Border: "60", Text: "255", Muted: "103", OK: "84", Error: "210", Selected: "60"},
+}
+
+type styles struct {
+	title    lipgloss.Style
+	pane     lipgloss.Style
+	faint    lipgloss.Style
+	ok       lipgloss.Style
+	err      lipgloss.Style
+	selected lipgloss.Style
+	border   lipgloss.Style
+}
 
 func New(version string) (Model, error) {
 	cfgPath, stateDir, err := paths()
@@ -99,6 +136,9 @@ func New(version string) (Model, error) {
 	}
 	if err := importLegacyHosts(&cfg); err != nil {
 		return Model{}, err
+	}
+	if themeIndex(cfg.Theme) < 0 {
+		cfg.Theme = themes[0].Name
 	}
 	sortHosts(cfg.Hosts)
 	if err := saveConfig(cfgPath, cfg); err != nil {
@@ -120,6 +160,10 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	case resultMsg:
@@ -130,27 +174,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("VMRelay "+m.version) + "\n")
-	b.WriteString(faintStyle.Render("System libvirt over SSH. noVNC and port tunnels stay loopback-bound.") + "\n\n")
+	w, h := m.size()
+	innerW := max(20, w-2)
+	s := m.styles()
+	b.WriteString(s.faint.Render("System libvirt over SSH. noVNC and port tunnels stay loopback-bound.") + "\n\n")
 
 	switch m.mode {
 	case modeAddHost:
-		b.WriteString(m.viewAddHost())
+		b.WriteString(m.viewAddHost(innerW))
 	case modeVMs:
-		b.WriteString(m.viewVMs())
+		b.WriteString(m.viewVMs(innerW))
+	case modeTheme:
+		b.WriteString(m.viewThemes(innerW))
 	case modeBusy:
-		b.WriteString(m.viewBusy())
+		b.WriteString(m.viewBusy(innerW))
 	default:
-		b.WriteString(m.viewHosts())
+		b.WriteString(m.viewHosts(innerW))
 	}
 
 	if m.errText != "" {
-		b.WriteString("\n" + errStyle.Render(m.errText) + "\n")
+		b.WriteString("\n" + s.err.Render(m.errText) + "\n")
 	} else if m.status != "" {
-		b.WriteString("\n" + okStyle.Render(m.status) + "\n")
+		b.WriteString("\n" + s.ok.Render(m.status) + "\n")
 	}
-	b.WriteString("\n" + faintStyle.Render(m.helpText()) + "\n")
-	return b.String()
+	b.WriteString("\n" + s.faint.Render(m.helpText()) + "\n")
+	return m.frame(w, h, b.String())
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -161,12 +209,22 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeBusy && m.mode != modeTheme {
+		m.themeBack = m.mode
+		m.themeCursor = max(0, themeIndex(m.config.Theme))
+		m.mode = modeTheme
+		m.errText = ""
+		m.status = "Browse themes. Enter selects, Esc cancels."
+		return m, nil
+	}
 
 	switch m.mode {
 	case modeAddHost:
 		return m.updateAddHostKey(msg)
 	case modeVMs:
 		return m.updateVMKey(msg)
+	case modeTheme:
+		return m.updateThemeKey(msg)
 	case modeBusy:
 		return m, nil
 	default:
@@ -356,6 +414,33 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "b":
+		m.mode = m.themeBack
+		m.status = "Theme unchanged."
+		m.errText = ""
+	case "up", "k":
+		if m.themeCursor > 0 {
+			m.themeCursor--
+		}
+	case "down", "j":
+		if m.themeCursor < len(themes)-1 {
+			m.themeCursor++
+		}
+	case "enter":
+		m.config.Theme = themes[m.themeCursor].Name
+		if err := saveConfig(m.configPath, m.config); err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		m.mode = m.themeBack
+		m.status = "Theme set to " + m.config.Theme + "."
+		m.errText = ""
+	}
+	return m, nil
+}
+
 func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	m.mode = m.priorMode
 	if msg.err != nil {
@@ -422,15 +507,17 @@ func (m Model) selectedVM() (VM, bool) {
 	return m.vms[m.vmCursor], true
 }
 
-func (m Model) viewHosts() string {
+func (m Model) viewHosts(width int) string {
 	var b strings.Builder
-	b.WriteString(paneStyle.Width(78).Render(m.hostRows()))
+	b.WriteString(m.styles().pane.Width(max(40, width-4)).Render(m.hostRows(width - 8)))
 	return b.String()
 }
 
-func (m Model) hostRows() string {
+func (m Model) hostRows(width int) string {
 	var b strings.Builder
+	s := m.styles()
 	b.WriteString("Hosts\n\n")
+	b.WriteString(button("Theme: "+m.currentTheme().Name, "m", width) + "\n\n")
 	if len(m.config.Hosts) == 0 {
 		b.WriteString("No hosts configured.\n\nPress a to add the first host.")
 		return b.String()
@@ -440,12 +527,12 @@ func (m Model) hostRows() string {
 		if i == m.hostCursor {
 			cursor = ">"
 		}
-		b.WriteString(fmt.Sprintf("%s %-18s %s\n", cursor, h.Name, faintStyle.Render(h.Target)))
+		b.WriteString(cursor + " " + cell(h.Name, 18) + " " + s.faint.Render(clipText(h.Target, max(10, width-22))) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (m Model) viewAddHost() string {
+func (m Model) viewAddHost(width int) string {
 	nameCursor := " "
 	targetCursor := " "
 	if m.addField == 0 {
@@ -455,16 +542,21 @@ func (m Model) viewAddHost() string {
 	}
 	body := fmt.Sprintf("Add Host\n\n%s Name:   %s\n%s Target: %s\n\nEnter moves/saves. Esc cancels.",
 		nameCursor, m.addName, targetCursor, m.addTarget)
-	return paneStyle.Width(78).Render(body)
+	return m.styles().pane.Width(max(40, width-4)).Render(body)
 }
 
-func (m Model) viewVMs() string {
+func (m Model) viewVMs(width int) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Host: %s  %s\n\n", m.activeHost.Name, faintStyle.Render(m.activeHost.Target)))
+	s := m.styles()
+	bodyW := max(50, width-8)
+	nameW := max(24, bodyW-44)
+	b.WriteString(fmt.Sprintf("Host: %s  %s\n\n", m.activeHost.Name, s.faint.Render(m.activeHost.Target)))
 	if len(m.vms) == 0 {
 		b.WriteString("No VMs found under qemu:///system.")
-		return paneStyle.Width(96).Render(b.String())
+		return s.pane.Width(max(50, width-4)).Render(b.String())
 	}
+	b.WriteString("  " + cell("VM", nameW) + " " + cell("State", 12) + " " + cell("Owner", 14) + " " + cell("Visibility", 10) + "\n")
+	b.WriteString("  " + strings.Repeat("-", nameW) + " " + strings.Repeat("-", 12) + " " + strings.Repeat("-", 14) + " " + strings.Repeat("-", 10) + "\n")
 	for i, vm := range m.vms {
 		cursor := " "
 		if i == m.vmCursor {
@@ -474,27 +566,54 @@ func (m Model) viewVMs() string {
 		if vm.Shared {
 			shared = "shared"
 		}
-		b.WriteString(fmt.Sprintf("%s %-34s %-12s %-14s %-10s\n", cursor, vm.Name, vm.State, ownerLabel(vm.Owner), shared))
+		row := cursor + " " + cell(vm.Name, nameW) + " " + cell(vm.State, 12) + " " + cell(ownerLabel(vm.Owner), 14) + " " + cell(shared, 10)
+		if i == m.vmCursor {
+			row = s.selected.Render(row)
+		}
+		b.WriteString(row + "\n")
 	}
-	return paneStyle.Width(96).Render(strings.TrimRight(b.String(), "\n"))
+	return s.pane.Width(max(50, width-4)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-func (m Model) viewBusy() string {
-	return paneStyle.Width(78).Render("Working\n\n" + m.status)
+func (m Model) viewThemes(width int) string {
+	var b strings.Builder
+	s := m.styles()
+	b.WriteString("Themes\n\n")
+	for i, theme := range themes {
+		cursor := " "
+		if i == m.themeCursor {
+			cursor = ">"
+		}
+		line := fmt.Sprintf("%s %s", cursor, cell(theme.Name, 14))
+		swatch := lipgloss.NewStyle().Foreground(theme.Accent).Render("██")
+		line += " " + swatch + " " + lipgloss.NewStyle().Foreground(theme.Muted).Render("VMRelay host manager")
+		if i == m.themeCursor {
+			line = s.selected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\nEnter selects. Esc returns without changing the saved theme.")
+	return s.pane.Width(max(50, width-4)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+func (m Model) viewBusy(width int) string {
+	return m.styles().pane.Width(max(40, width-4)).Render("Working\n\n" + m.status)
 }
 
 func (m Model) helpText() string {
 	if !m.help {
 		switch m.mode {
 		case modeVMs:
-			return "?: help  b: hosts  r: refresh  p: start/shutdown  f: force off  o: open console  x: stop console"
+			return "?: help  m: themes  b: hosts  r: refresh  p: start/shutdown  f: force off  o: open console  x: stop console"
 		case modeAddHost:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
+		case modeTheme:
+			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		default:
-			return "?: help  a: add host  enter/r: view VMs  t: test  s: setup  d: remove  q: quit"
+			return "?: help  m: themes  a: add host  enter/r: view VMs  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, enter view, t test SSH/libvirt, s install/check host packages, d remove. VMs: p start/shutdown, f force off, o open noVNC console, x stop console, a adopt, h share/private, r refresh."
+	return "Hosts: a add, m themes, enter view, t test SSH/libvirt, s install/check host packages, d remove. VMs: p start/shutdown, f force off, o open noVNC console, x stop console, a adopt, h share/private, r refresh."
 }
 
 func ownerLabel(owner string) string {
@@ -502,6 +621,145 @@ func ownerLabel(owner string) string {
 		return "unmanaged"
 	}
 	return owner
+}
+
+func (m Model) size() (int, int) {
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = defaultWidth
+	}
+	if h <= 0 {
+		h = defaultHeight
+	}
+	if w < 30 {
+		w = 30
+	}
+	if h < 10 {
+		h = 10
+	}
+	return w, h
+}
+
+func (m Model) currentTheme() theme {
+	name := m.config.Theme
+	if m.mode == modeTheme && m.themeCursor >= 0 && m.themeCursor < len(themes) {
+		name = themes[m.themeCursor].Name
+	}
+	idx := themeIndex(name)
+	if idx < 0 {
+		idx = 0
+	}
+	return themes[idx]
+}
+
+func (m Model) styles() styles {
+	t := m.currentTheme()
+	return styles{
+		title:    lipgloss.NewStyle().Bold(true).Foreground(t.Text).Background(t.Accent),
+		pane:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Border).Padding(0, 1),
+		faint:    lipgloss.NewStyle().Foreground(t.Muted),
+		ok:       lipgloss.NewStyle().Foreground(t.OK),
+		err:      lipgloss.NewStyle().Foreground(t.Error),
+		selected: lipgloss.NewStyle().Foreground(t.Text).Background(t.Selected),
+		border:   lipgloss.NewStyle().Foreground(t.Border),
+	}
+}
+
+func themeIndex(name string) int {
+	for i, theme := range themes {
+		if strings.EqualFold(theme.Name, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m Model) frame(width, height int, body string) string {
+	s := m.styles()
+	title := " VMRelay " + m.version + " "
+	innerW := max(1, width-2)
+	innerH := max(1, height-2)
+	top := titledBorderTop(innerW, title, s)
+	bottom := s.border.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	body = lipgloss.NewStyle().MaxWidth(innerW).Render(body)
+	lines := strings.Split(body, "\n")
+	if len(lines) > innerH {
+		lines = lines[:innerH]
+	}
+
+	var b strings.Builder
+	b.WriteString(top + "\n")
+	for i := 0; i < innerH; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		b.WriteString(s.border.Render("│") + padLine(line, innerW) + s.border.Render("│"))
+		if i < innerH-1 {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n" + bottom)
+	return b.String()
+}
+
+func titledBorderTop(width int, title string, s styles) string {
+	titleW := lipgloss.Width(title)
+	if titleW >= width {
+		clipped := clipText(title, max(1, width))
+		return s.border.Render("╭") + s.title.Render(clipped) + s.border.Render("╮")
+	}
+	left := (width - titleW) / 2
+	right := width - titleW - left
+	return s.border.Render("╭"+strings.Repeat("─", left)) + s.title.Render(title) + s.border.Render(strings.Repeat("─", right)+"╮")
+}
+
+func padLine(line string, width int) string {
+	lineW := lipgloss.Width(line)
+	if lineW > width {
+		line = clipText(line, width)
+		lineW = lipgloss.Width(line)
+	}
+	if lineW < width {
+		line += strings.Repeat(" ", width-lineW)
+	}
+	return line
+}
+
+func button(label, key string, width int) string {
+	text := "[" + key + "] " + label
+	return cell(text, min(max(18, lipgloss.Width(text)), max(18, width)))
+}
+
+func cell(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	text = clipText(text, width)
+	return text + strings.Repeat(" ", max(0, width-lipgloss.Width(text)))
+}
+
+func clipText(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	if width <= 3 {
+		return strings.Repeat(".", width)
+	}
+	limit := width - 3
+	var b strings.Builder
+	for _, r := range text {
+		next := b.String() + string(r)
+		if lipgloss.Width(next) > limit {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String() + "..."
 }
 
 func paths() (string, string, error) {

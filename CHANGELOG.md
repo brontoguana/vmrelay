@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-05-05
+
+- Changed the Go TUI to render as a full-screen framed interface with a rounded outer border and centered `VMRelay` version title.
+- Added ten selectable TUI themes, stored in local config and available from the main Hosts page with `m`.
+- Fixed VM list column rendering so long VM names are clipped and owner/visibility columns stay vertically aligned.
+- Added focused tests for full-screen frame sizing and VM row alignment.
+
 ## 0.2.1 - 2026-05-05
 
 - Fixed remote SSH script execution in the Go TUI by sending scripts to `bash -s` over stdin instead of passing them through `bash -lc`, preventing remote shell diagnostics from being emitted during VM inventory.

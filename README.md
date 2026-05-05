@@ -25,14 +25,16 @@ vmrelay
 Inside the TUI:
 
 1. Press `a` to add a host such as `iron` with an SSH target such as `aem@iron`.
-2. Press `t` to test SSH, libvirt, KVM, noVNC, and websockify.
-3. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
-4. Press `Enter` to open the VM list for the selected host.
-5. Select a VM and press `o` to open its browser console.
+2. Press `m` to browse and select a saved theme.
+3. Press `t` to test SSH, libvirt, KVM, noVNC, and websockify.
+4. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
+5. Press `Enter` to open the VM list for the selected host.
+6. Select a VM and press `o` to open its browser console.
 
 ## Capabilities
 
 - Host manager opens by default; there is no separate day-to-day CLI workflow.
+- The TUI uses a full-screen terminal layout with a VMRelay title border and ten selectable themes.
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, noVNC, and websockify on apt-based hosts.
 - VM inventory shows state plus VMRelay ownership status.
