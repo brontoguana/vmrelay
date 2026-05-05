@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.28 - 2026-05-05
+
+- Changed host Mappings from local SSH forwards to VM-accessible service mappings: VMs connect to the host's stable libvirt bridge address, normally `192.168.122.1`, and SSH reverse-forwards that traffic back to `127.0.0.1` on the local workstation.
+- Simplified the mapping form to name, local service port, and VM port; the remote bridge address is discovered from libvirt's `default` NAT network when the mapping starts.
+- Changed host setup/readiness to cover VM service forwarding, including `GatewayPorts clientspecified` for SSH reverse forwards to the libvirt bridge.
+- Verified on `iron` that a temporary reverse forward can bind `192.168.122.1` and carry HTTP back to a local workstation service, so every VM on the default NAT network can use the same stable endpoint.
+
 ## 0.2.27 - 2026-05-05
 
 - Fixed console open after a VM's live VNC port changes: VMRelay now detects stale remote noVNC/websockify proxies and restarts them against the current libvirt VNC endpoint.

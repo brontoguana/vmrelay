@@ -215,7 +215,7 @@ func TestHostDetailRendersMappings(t *testing.T) {
 	if !strings.Contains(view, "Mappings") || !strings.Contains(view, "Web") {
 		t.Fatalf("mapping tab did not render configured mapping:\n%s", view)
 	}
-	if !strings.Contains(view, "127.0.0.1:8080") || !strings.Contains(view, "127.0.0.1:8081") {
+	if !strings.Contains(view, "127.0.0.1:8080") || !strings.Contains(view, "default bridge:8081") {
 		t.Fatalf("mapping endpoints missing:\n%s", view)
 	}
 }
@@ -371,8 +371,35 @@ func TestPendingMappingValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pendingMapping returned error: %v", err)
 	}
-	if mapping.Host != "iron" || mapping.LocalPort != 8080 || mapping.RemotePort != 8081 {
+	if mapping.Host != "iron" || mapping.LocalPort != 8080 || mapping.RemotePort != 8081 || mapping.RemoteHost != defaultVMBridgeHost {
 		t.Fatalf("unexpected mapping: %#v", mapping)
+	}
+}
+
+func TestAddMappingTreatsQAsText(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeAddMapping,
+		activeHost: Host{Name: "iron"},
+		addMapName: "s",
+	}
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Fatal("q in add mapping form should edit text, not quit")
+	}
+	next := updated.(Model)
+	if next.addMapName != "sq" {
+		t.Fatalf("q was not entered into mapping name: %#v", next)
+	}
+	if strings.Contains(next.helpText(), "q: quit") {
+		t.Fatalf("add mapping footer should not advertise quit: %q", next.helpText())
+	}
+}
+
+func TestParseVMBridgeAddress(t *testing.T) {
+	out := "noise\nVMRELAY_BRIDGE\t192.168.122.1\n"
+	if got := parseVMBridgeAddress(out); got != "192.168.122.1" {
+		t.Fatalf("parseVMBridgeAddress = %q", got)
 	}
 }
 
