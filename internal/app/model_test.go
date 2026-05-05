@@ -153,6 +153,102 @@ func TestVMListFailureNamesHost(t *testing.T) {
 	}
 }
 
+func TestVMRefreshTickStartsSilentInventoryLoad(t *testing.T) {
+	m := Model{
+		mode:       modeVMs,
+		hostTab:    hostTabVMs,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+	}
+	updated, cmd := m.updateVMRefreshTick()
+	next := updated.(Model)
+	if !next.vmRefreshInFlight {
+		t.Fatal("VM refresh tick should mark background refresh in flight")
+	}
+	if cmd == nil {
+		t.Fatal("VM refresh tick should return a command")
+	}
+
+	m.mode = modeHosts
+	updated, _ = m.updateVMRefreshTick()
+	next = updated.(Model)
+	if next.vmRefreshInFlight {
+		t.Fatal("VM refresh tick should not start inventory load outside VM list")
+	}
+}
+
+func TestAutoVMRefreshUpdatesRowsWithoutChangingStatus(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	m := Model{
+		mode:              modeVMs,
+		hostTab:           hostTabVMs,
+		activeHost:        host,
+		status:            "User-facing status stays put.",
+		vmRefreshInFlight: true,
+		vms:               []VM{{Name: "old", State: "running"}},
+	}
+	updated, cmd := m.updateResult(resultMsg{
+		op:   "vms-auto",
+		host: host,
+		vms:  []VM{{Name: "new", State: "shut off"}},
+	})
+	if cmd != nil {
+		t.Fatal("auto VM refresh result should not trigger another command")
+	}
+	next := updated.(Model)
+	if next.vmRefreshInFlight {
+		t.Fatal("auto VM refresh result should clear in-flight state")
+	}
+	if next.status != m.status {
+		t.Fatalf("auto VM refresh changed status: %q", next.status)
+	}
+	if len(next.vms) != 1 || next.vms[0].Name != "new" || next.vms[0].State != "shut off" {
+		t.Fatalf("auto VM refresh did not replace VM rows: %#v", next.vms)
+	}
+
+	stale := resultMsg{op: "vms-auto", host: Host{Name: "other", Target: "other"}, vms: []VM{{Name: "wrong"}}}
+	updated, _ = next.updateResult(stale)
+	next = updated.(Model)
+	if len(next.vms) != 1 || next.vms[0].Name != "new" {
+		t.Fatalf("stale auto refresh should be ignored: %#v", next.vms)
+	}
+}
+
+func TestVMRefreshCanPreserveActionStatus(t *testing.T) {
+	m := Model{
+		mode:       modeBusy,
+		priorMode:  modeVMs,
+		activeHost: Host{Name: "iron"},
+		status:     "Loading VMs from iron...",
+	}
+	updated, _ := m.updateResult(resultMsg{
+		op:     "vms",
+		status: "Shutdown signal sent to vm1, but it is still running after 30s.",
+		vms:    []VM{{Name: "vm1", State: "running"}},
+	})
+	next := updated.(Model)
+	if !strings.Contains(next.status, "still running") {
+		t.Fatalf("VM refresh should preserve action status, got %q", next.status)
+	}
+}
+
+func TestShutdownLifecycleScriptSendsACPIAndReportsState(t *testing.T) {
+	script := lifecycleScript("vm1", "shutdown")
+	for _, want := range []string{
+		"shutdown \"$vm\" --mode acpi",
+		"domstate \"$vm\"",
+		"after 30s",
+		"use force off",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("shutdown script missing %q:\n%s", want, script)
+		}
+	}
+	startScript := lifecycleScript("vm1", "start")
+	if strings.Contains(startScript, "--mode acpi") || !strings.Contains(startScript, "virsh -c qemu:///system start") {
+		t.Fatalf("start script should stay a direct lifecycle action:\n%s", startScript)
+	}
+}
+
 func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 	m := Model{
 		config:     Config{Theme: "Classic"},

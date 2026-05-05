@@ -134,6 +134,7 @@ const (
 	defaultVMBridgeHost    = "default"
 	defaultVMBridgeAddress = "192.168.122.1"
 	addMappingFieldCount   = 3
+	vmRefreshInterval      = 10 * time.Second
 )
 
 type Model struct {
@@ -143,28 +144,29 @@ type Model struct {
 	stateDir   string
 	config     Config
 
-	width       int
-	height      int
-	mode        mode
-	priorMode   mode
-	themeBack   mode
-	status      string
-	errText     string
-	help        bool
-	hostCursor  int
-	vmCursor    int
-	hostTab     int
-	vmTab       int
-	mapCursor   int
-	diskCursor  int
-	nicCursor   int
-	isoCursor   int
-	themeCursor int
-	vms         []VM
-	vmDetail    VMDetail
-	activeHost  Host
-	updateInfo  updateInfo
-	updateExit  bool
+	width             int
+	height            int
+	mode              mode
+	priorMode         mode
+	themeBack         mode
+	status            string
+	errText           string
+	help              bool
+	hostCursor        int
+	vmCursor          int
+	hostTab           int
+	vmTab             int
+	mapCursor         int
+	diskCursor        int
+	nicCursor         int
+	isoCursor         int
+	themeCursor       int
+	vms               []VM
+	vmDetail          VMDetail
+	activeHost        Host
+	updateInfo        updateInfo
+	updateExit        bool
+	vmRefreshInFlight bool
 
 	addName   string
 	addTarget string
@@ -209,6 +211,8 @@ type Model struct {
 type resultMsg struct {
 	op     string
 	output string
+	status string
+	host   Host
 	vms    []VM
 	detail VMDetail
 	dir    string
@@ -232,6 +236,8 @@ type updateCheckMsg struct {
 	available bool
 	err       error
 }
+
+type vmRefreshTickMsg struct{}
 
 var (
 	defaultWidth  = 100
@@ -320,10 +326,13 @@ func New(version string) (Model, error) {
 }
 
 func (m Model) Init() tea.Cmd {
+	var cmds []tea.Cmd
 	if os.Getenv("VMRELAY_SKIP_UPDATE_CHECK") == "1" {
-		return nil
+		cmds = append(cmds, vmRefreshTickCmd())
+		return tea.Batch(cmds...)
 	}
-	return checkForUpdateCmd(m.version)
+	cmds = append(cmds, checkForUpdateCmd(m.version), vmRefreshTickCmd())
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -338,6 +347,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateResult(msg)
 	case updateCheckMsg:
 		return m.updateCheck(msg)
+	case vmRefreshTickMsg:
+		return m.updateVMRefreshTick()
 	}
 	return m, nil
 }
@@ -1381,7 +1392,31 @@ func (m Model) updateCheck(msg updateCheckMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateVMRefreshTick() (tea.Model, tea.Cmd) {
+	cmds := []tea.Cmd{vmRefreshTickCmd()}
+	if m.mode == modeVMs && m.hostTab == hostTabVMs && !m.vmRefreshInFlight && m.activeHost.Name != "" && m.activeHost.Target != "" {
+		h := m.activeHost
+		m.vmRefreshInFlight = true
+		cmds = append(cmds, func() tea.Msg {
+			vms, out, err := listVMs(h)
+			return resultMsg{op: "vms-auto", output: out, host: h, vms: vms, err: err}
+		})
+	}
+	return m, tea.Batch(cmds...)
+}
+
 func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
+	if msg.op == "vms-auto" {
+		m.vmRefreshInFlight = false
+		if msg.err != nil || m.mode != modeVMs || m.hostTab != hostTabVMs || m.activeHost.Name != msg.host.Name || m.activeHost.Target != msg.host.Target {
+			return m, nil
+		}
+		m.vms = msg.vms
+		if m.vmCursor >= len(m.vms) {
+			m.vmCursor = max(0, len(m.vms)-1)
+		}
+		return m, nil
+	}
 	m.mode = m.priorMode
 	if msg.err != nil {
 		m.errText = failureText(msg, m)
@@ -1397,7 +1432,11 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		if m.vmCursor >= len(m.vms) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
-		m.status = fmt.Sprintf("Loaded %d VMs from %s.", len(m.vms), m.activeHost.Name)
+		if msg.status != "" {
+			m.status = msg.status
+		} else {
+			m.status = fmt.Sprintf("Loaded %d VMs from %s.", len(m.vms), m.activeHost.Name)
+		}
 	case "vm-detail":
 		m.vmDetail = msg.detail
 		if m.diskCursor >= len(m.vmDetail.Disks) {
@@ -1406,7 +1445,11 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		if m.nicCursor >= len(m.vmDetail.NICs) {
 			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
 		}
-		m.status = "Loaded " + m.vmDetail.VM.Name + "."
+		if msg.status != "" {
+			m.status = msg.status
+		} else {
+			m.status = "Loaded " + m.vmDetail.VM.Name + "."
+		}
 	case "iso-list":
 		m.isoDir = msg.dir
 		m.isoEntries = msg.files
@@ -1415,14 +1458,14 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("Browsing %s. Select a directory or ISO.", m.isoDir)
 	case "start", "shutdown", "destroy", "adopt", "share":
-		m.status = strings.TrimSpace(msg.output)
-		if m.status == "" {
-			m.status = msg.op + " complete."
+		actionStatus := strings.TrimSpace(msg.output)
+		if actionStatus == "" {
+			actionStatus = msg.op + " complete."
 		}
 		if m.priorMode == modeVMDetail {
-			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+			return m.loadVMDetailWithStatus(m.activeHost, m.vmDetail.VM, actionStatus)
 		}
-		return m.loadVMs(m.activeHost)
+		return m.loadVMsWithStatus(m.activeHost, actionStatus)
 	case "vm-duplicate":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1510,6 +1553,10 @@ func (m Model) busy(back mode, status, op string, fn func() resultMsg) (tea.Mode
 }
 
 func (m Model) loadVMs(h Host) (tea.Model, tea.Cmd) {
+	return m.loadVMsWithStatus(h, "")
+}
+
+func (m Model) loadVMsWithStatus(h Host, finalStatus string) (tea.Model, tea.Cmd) {
 	m.activeHost = h
 	m.priorMode = modeVMs
 	m.mode = modeBusy
@@ -1517,11 +1564,15 @@ func (m Model) loadVMs(h Host) (tea.Model, tea.Cmd) {
 	m.errText = ""
 	return m, func() tea.Msg {
 		vms, out, err := listVMs(h)
-		return resultMsg{op: "vms", output: out, vms: vms, err: err}
+		return resultMsg{op: "vms", output: out, status: finalStatus, host: h, vms: vms, err: err}
 	}
 }
 
 func (m Model) loadVMDetail(h Host, vm VM) (tea.Model, tea.Cmd) {
+	return m.loadVMDetailWithStatus(h, vm, "")
+}
+
+func (m Model) loadVMDetailWithStatus(h Host, vm VM, finalStatus string) (tea.Model, tea.Cmd) {
 	m.activeHost = h
 	m.vmDetail.VM = vm
 	m.priorMode = modeVMDetail
@@ -1530,7 +1581,7 @@ func (m Model) loadVMDetail(h Host, vm VM) (tea.Model, tea.Cmd) {
 	m.errText = ""
 	return m, func() tea.Msg {
 		detail, out, err := getVMDetail(h, vm)
-		return resultMsg{op: "vm-detail", output: out, detail: detail, err: err}
+		return resultMsg{op: "vm-detail", output: out, status: finalStatus, detail: detail, err: err}
 	}
 }
 
@@ -1551,6 +1602,12 @@ func (m Model) loadISODir(dir string) (tea.Model, tea.Cmd) {
 		}
 		return resultMsg{op: "iso-list", output: out, dir: actualDir, files: entries, err: err}
 	}
+}
+
+func vmRefreshTickCmd() tea.Cmd {
+	return tea.Tick(vmRefreshInterval, func(time.Time) tea.Msg {
+		return vmRefreshTickMsg{}
+	})
 }
 
 func (m Model) selectedHost() (Host, bool) {
@@ -3170,8 +3227,42 @@ func lifecycle(h Host, vmName, action string) (string, error) {
 	if action != "start" && action != "shutdown" && action != "destroy" {
 		return "", fmt.Errorf("unsupported action: %s", action)
 	}
-	script := fmt.Sprintf("set -euo pipefail\nvirsh -c qemu:///system %s %s\n", shellWord(action), shellQuote(vmName))
+	script := lifecycleScript(vmName, action)
 	return ssh(h.Target, script, 45*time.Second)
+}
+
+func lifecycleScript(vmName, action string) string {
+	if action == "shutdown" {
+		return fmt.Sprintf(`set -euo pipefail
+vm=%s
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+case "$state" in
+  running*) ;;
+  "") echo "VM not found: $vm" >&2; exit 1 ;;
+  *) echo "$vm is already $state."; exit 0 ;;
+esac
+err_file="$(mktemp)"
+trap 'rm -f "$err_file"' EXIT
+if ! virsh -c qemu:///system shutdown "$vm" --mode acpi >/dev/null 2>"$err_file"; then
+  if ! virsh -c qemu:///system shutdown "$vm" >/dev/null 2>"$err_file"; then
+    cat "$err_file" >&2
+    exit 1
+  fi
+fi
+deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+  case "$state" in
+    running*) sleep 2 ;;
+    "") echo "Shutdown signal sent to $vm."; exit 0 ;;
+    *) echo "Shutdown complete. $vm is $state."; exit 0 ;;
+  esac
+done
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+echo "Shutdown signal sent to $vm, but it is still ${state:-unknown} after 30s. If the guest ignores ACPI shutdown, use force off."
+`, shellQuote(vmName))
+	}
+	return fmt.Sprintf("set -euo pipefail\nvirsh -c qemu:///system %s %s\n", shellWord(action), shellQuote(vmName))
 }
 
 func setOwnership(h Host, vm VM, shared bool, keepOwner bool) (string, error) {

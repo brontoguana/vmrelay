@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.30 - 2026-05-05
+
+- Added a quiet 10-second background refresh on the host VM list so VM state changes appear without pressing `r`.
+- Changed graceful shutdown to send an explicit ACPI shutdown request, wait briefly for libvirt state to change, and report when the guest is still running and force-off may be needed.
+
 ## 0.2.29 - 2026-05-05
 
 - Made the Mappings page show the concrete guest-facing endpoint clearly: VMs connect to the VM endpoint column, normally `192.168.122.1:<vm-port>`, and VMRelay forwards that traffic back to `127.0.0.1:<local-service-port>` on the local workstation.
