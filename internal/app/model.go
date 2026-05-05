@@ -1818,9 +1818,26 @@ func errorSummary(text string) string {
 		return ""
 	}
 	if len(lines) > 1 && strings.Contains(lines[0], "exit status") {
+		for _, line := range lines[1:] {
+			if isUsefulErrorLine(line) {
+				return lines[0] + ": " + line
+			}
+		}
 		return lines[0] + ": " + lines[1]
 	}
 	return lines[0]
+}
+
+func isUsefulErrorLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "warning") {
+		return false
+	}
+	return true
 }
 
 func firstLine(text string) string {
@@ -3050,13 +3067,13 @@ stage_iso() {
   iso_vol="vmrelay-${safe}-${size}-${mtime}-${iso_base}"
   if ! virsh -c qemu:///system vol-info --pool "$storage_pool" "$iso_vol" >/dev/null 2>&1; then
     virsh -c qemu:///system vol-create-as "$storage_pool" "$iso_vol" "$size" --format raw >/dev/null
-    if ! virsh -c qemu:///system vol-upload --pool "$storage_pool" "$iso_vol" "$source"; then
+    if ! virsh -c qemu:///system vol-upload --pool "$storage_pool" "$iso_vol" "$source" >/dev/null; then
       virsh -c qemu:///system vol-delete --pool "$storage_pool" "$iso_vol" >/dev/null 2>&1 || true
       echo "Failed to stage ISO into libvirt storage pool ${storage_pool}: ${source}" >&2
       return 1
     fi
   fi
-  virsh -c qemu:///system vol-path --pool "$storage_pool" "$iso_vol"
+  virsh -c qemu:///system vol-path --pool "$storage_pool" "$iso_vol" | awk 'NF { print; exit }'
 }
 
 install_iso="$(stage_iso "$iso")"
@@ -3067,15 +3084,14 @@ args=(
   --name "$name"
   --memory "$memory"
   --vcpus "$cpus"
-	  --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
-	  --network "network=${network},model=virtio"
-	  --graphics vnc,listen=127.0.0.1
-	  --input type=tablet,bus=usb
-	  --video virtio
-	  --cdrom "$install_iso"
+  --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
+  --network "network=${network},model=virtio"
+  --graphics vnc,listen=127.0.0.1
+  --input type=tablet,bus=usb
+  --video virtio
+  --cdrom "$install_iso"
   --os-variant detect=on,require=off
   --noautoconsole
-  --wait 0
 )
 if [ "$firmware" = "uefi" ]; then
   args+=(--boot uefi)

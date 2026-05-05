@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.17 - 2026-05-05
+
+- Fixed VM creation when staging a user-home ISO into libvirt storage: `virsh vol-upload` progress output is now suppressed so VMRelay captures only the final staged ISO path for `virt-install`.
+- Removed the redundant `virt-install --wait 0` flag that produced a harmless warning before real failures.
+- Improved visible error summaries so warnings after `exit status 1` are skipped in favor of the first real failure line.
+- Read-only inspection on `iron` found the failed create attempt handed `virt-install` an ISO path with a leading embedded newline, causing validation under `/home/simplehelp/.../var/lib/libvirt/images`.
+
 ## 0.2.16 - 2026-05-05
 
 - Fixed startup self-update when the installer needs a sudo password: accepting an update now exits the TUI first, runs the installer in the normal terminal with stdin/stdout/stderr attached, then restarts VMRelay.

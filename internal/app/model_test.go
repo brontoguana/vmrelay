@@ -328,6 +328,14 @@ func TestErrorSummaryIncludesRemoteOutputAfterExitStatus(t *testing.T) {
 	}
 }
 
+func TestErrorSummarySkipsWarningsAfterExitStatus(t *testing.T) {
+	got := errorSummary("VM creation failed: exit status 1\nWARNING  Treating --wait 0 as --noautoconsole\nValidating install media failed\n")
+	want := "VM creation failed: exit status 1: Validating install media failed"
+	if got != want {
+		t.Fatalf("errorSummary() = %q, want %q", got, want)
+	}
+}
+
 func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 	m := Model{
 		config:           Config{Theme: "Classic"},
