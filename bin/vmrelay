@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.9"
+VERSION="0.1.10"
 REPO="brontoguana/vmrelay"
 RAW_SCRIPT_URL="https://api.github.com/repos/${REPO}/contents/bin/vmrelay?ref=main"
 RAW_SCRIPT_ACCEPT="Accept: application/vnd.github.raw"
@@ -792,6 +792,7 @@ else
 fi
 
 pid_file="/tmp/vmrelay-novnc-${novnc_port}.pid"
+log_file="/tmp/vmrelay-novnc-${novnc_port}.log"
 if [ -r "$pid_file" ]; then
   old_pid=$(cat "$pid_file" 2>/dev/null || true)
   case "$old_pid" in
@@ -802,13 +803,30 @@ if [ -r "$pid_file" ]; then
   rm -f "$pid_file"
 fi
 
-websockify --daemon --pid "$pid_file" --web "$novnc_web" "127.0.0.1:${novnc_port}" "127.0.0.1:${vnc_port}" >/dev/null
+rm -f "$log_file"
+nohup websockify --web "$novnc_web" "127.0.0.1:${novnc_port}" "127.0.0.1:${vnc_port}" </dev/null >"$log_file" 2>&1 &
+echo "$!" >"$pid_file"
 sleep 1
 
 if [ ! -r "$pid_file" ]; then
   echo "websockify did not create a pid file at $pid_file" >&2
   exit 1
 fi
+new_pid=$(cat "$pid_file" 2>/dev/null || true)
+case "$new_pid" in
+  ''|*[!0-9]*)
+    echo "websockify wrote an invalid pid file at $pid_file" >&2
+    exit 1
+    ;;
+  *)
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+      echo "websockify exited while starting; log follows:" >&2
+      sed -n '1,80p' "$log_file" >&2 || true
+      rm -f "$pid_file"
+      exit 1
+    fi
+    ;;
+esac
 
 echo "VM: $vm_name"
 echo "VM state: $state"
