@@ -47,14 +47,14 @@ Inside the TUI:
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`, `qemu-utils`, OVMF/UEFI firmware, noVNC, and websockify on apt-based hosts.
 - Host detail screens include VM inventory, host config/readiness actions, and local port mappings.
-- VM creation from the host Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, and libvirt networking, and records VMRelay ownership for the remote SSH user.
+- VM creation from the host Config tab creates a qcow2 boot disk, starts a VNC installer VM from a remote ISO path with selectable disk bus, BIOS/UEFI firmware, libvirt networking, and USB tablet input, and records VMRelay ownership for the remote SSH user.
 - VM inventory shows state plus VMRelay ownership status.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
 - VM actions include start, shutdown, force off, refresh, adopt ownership, share/private toggle, browser console open, and console stop.
 - Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, and detach disks without deleting their image files.
 - NIC management can attach a virtio interface to a libvirt network such as `default` and detach selected interfaces by MAC address.
 - Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.
-- VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`; if the preferred local console port is busy, VMRelay automatically picks the next available local port.
+- VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`; console URLs enable noVNC's local pointer dot and low-latency settings by default, and if the preferred local console port is busy, VMRelay automatically picks the next available local port.
 - VMRelay imports legacy host definitions from `~/.config/vmrelay/hosts.d` when present.
 
 ## Ownership

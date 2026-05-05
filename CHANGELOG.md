@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.10 - 2026-05-05
+
+- Changed generated noVNC console URLs to enable noVNC's local pointer dot and lower-latency browser settings by default, so mouse control has immediate local visual feedback even if the guest cursor repaint is slow.
+- Changed VM creation to add a USB tablet input device to new graphical guests for better absolute-pointer behavior.
+- Operational note: fixed the imported `Draytek_VPN_virtualisation_server` on `iron` by backing up its libvirt XML, switching the VM definition from BIOS to OVMF/UEFI, preserving the SATA boot disk order, and restarting it; screenshots confirmed Windows progressed to `Getting devices ready`.
+
 ## 0.2.9 - 2026-05-05
 
 - Added host-level VM creation from the Config tab using a remote ISO path, `virt-install`, a newly created qcow2 boot disk, VNC graphics, libvirt networking, selectable disk bus, and BIOS/UEFI firmware selection.

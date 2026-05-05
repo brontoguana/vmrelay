@@ -2,6 +2,7 @@ package app
 
 import (
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -291,6 +292,29 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	m.createVMFirmware = "coreboot"
 	if _, err := m.pendingVMCreate(); err == nil {
 		t.Fatal("expected unsupported firmware to fail")
+	}
+}
+
+func TestNoVNCURLUsesLowLatencyCursorSettings(t *testing.T) {
+	rawURL := noVNCURL(4523)
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("failed to parse noVNC URL: %v", err)
+	}
+	if parsed.Scheme != "http" || parsed.Host != "127.0.0.1:4523" || parsed.Path != "/vnc.html" {
+		t.Fatalf("unexpected noVNC URL: %s", rawURL)
+	}
+	query := parsed.Query()
+	for key, want := range map[string]string{
+		"autoconnect": "1",
+		"resize":      "scale",
+		"show_dot":    "1",
+		"quality":     "9",
+		"compression": "0",
+	} {
+		if got := query.Get(key); got != want {
+			t.Fatalf("query %s = %q, want %q in %s", key, got, want, rawURL)
+		}
 	}
 }
 

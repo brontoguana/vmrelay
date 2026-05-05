@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2628,11 +2629,12 @@ args=(
   --name "$name"
   --memory "$memory"
   --vcpus "$cpus"
-  --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
-  --network "network=${network},model=virtio"
-  --graphics vnc,listen=127.0.0.1
-  --video virtio
-  --cdrom "$iso"
+	  --disk "path=${disk},format=qcow2,bus=${disk_bus},cache=none"
+	  --network "network=${network},model=virtio"
+	  --graphics vnc,listen=127.0.0.1
+	  --input type=tablet,bus=usb
+	  --video virtio
+	  --cdrom "$iso"
   --os-variant detect=on,require=off
   --noautoconsole
   --wait 0
@@ -2929,17 +2931,27 @@ fi
 	if err := writeConsoleState(stateDir, state); err != nil {
 		return out, err
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/vnc.html?autoconnect=1&resize=scale", localPort)
-	opened := openBrowser(url)
+	consoleURL := noVNCURL(localPort)
+	opened := openBrowser(consoleURL)
 	if opened {
-		out += "\nConsole URL: " + url + "\nBrowser: requested local console URL"
+		out += "\nConsole URL: " + consoleURL + "\nBrowser: requested local console URL"
 	} else {
-		out += "\nConsole URL: " + url
+		out += "\nConsole URL: " + consoleURL
 	}
 	if adjusted {
 		out += fmt.Sprintf("\nLocal port %d was busy; using %d instead.", preferredLocalPort, localPort)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func noVNCURL(localPort int) string {
+	values := url.Values{}
+	values.Set("autoconnect", "1")
+	values.Set("resize", "scale")
+	values.Set("show_dot", "1")
+	values.Set("quality", "9")
+	values.Set("compression", "0")
+	return fmt.Sprintf("http://127.0.0.1:%d/vnc.html?%s", localPort, values.Encode())
 }
 
 func closeConsole(h Host, vmName, stateDir string) (string, error) {
