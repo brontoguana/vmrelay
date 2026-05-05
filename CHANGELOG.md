@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.27 - 2026-05-05
+
+- Fixed console open after a VM's live VNC port changes: VMRelay now detects stale remote noVNC/websockify proxies and restarts them against the current libvirt VNC endpoint.
+- Repaired the live `Win11-Orig` console proxy on `iron`, which was still forwarding to old VNC port `5904` while the running VM had moved to `5903`.
+
 ## 0.2.26 - 2026-05-05
 
 - Fixed the VM duplicate name prompt so `q` is entered as normal text instead of quitting the app.

@@ -3773,7 +3773,43 @@ func openConsole(h Host, vmName, stateDir string) (string, error) {
 	}
 	remotePort := stablePort("remote:"+h.Name+":"+vmName, 6080, 1000)
 
-	script := fmt.Sprintf(`
+	out, err := ssh(h.Target, consoleRemoteScript(vmName, remotePort), 30*time.Second)
+	if err != nil {
+		return out, err
+	}
+
+	ctl := consoleControlPath(stateDir, h.Name, vmName)
+	_ = os.Remove(ctl)
+	args := []string{
+		"-f", "-N", "-M", "-S", ctl,
+		"-o", "BatchMode=yes",
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ControlPersist=yes",
+		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort),
+		h.Target,
+	}
+	if tunnelOut, err := runCommand(20*time.Second, "ssh", args...); err != nil {
+		return out + tunnelOut, fmt.Errorf("failed to start SSH console tunnel: %w", err)
+	}
+	state := consoleState{Host: h.Name, Target: h.Target, VM: vmName, LocalPort: localPort, RemotePort: remotePort}
+	if err := writeConsoleState(stateDir, state); err != nil {
+		return out, err
+	}
+	consoleURL := noVNCURL(localPort)
+	opened := openBrowser(consoleURL)
+	if opened {
+		out += "\nConsole URL: " + consoleURL + "\nBrowser: requested local console URL"
+	} else {
+		out += "\nConsole URL: " + consoleURL
+	}
+	if adjusted {
+		out += fmt.Sprintf("\nLocal port %d was busy; using %d instead.", preferredLocalPort, localPort)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func consoleRemoteScript(vmName string, remotePort int) string {
+	return fmt.Sprintf(`
 set -euo pipefail
 vm=%s
 remote_port=%d
@@ -3854,9 +3890,8 @@ if [ "$port" -lt 100 ]; then port=$((5900 + port)); fi
 command -v websockify >/dev/null 2>&1 || { echo "websockify is missing; run setup for this host." >&2; exit 1; }
 pidfile="/tmp/vmrelay-novnc-${remote_port}.pid"
 logfile="/tmp/vmrelay-novnc-${remote_port}.log"
-if [ -s "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-  echo "noVNC already running on 127.0.0.1:${remote_port}"
-else
+
+start_novnc() {
   rm -f "$pidfile" "$logfile"
   nohup websockify --web=/usr/share/novnc "127.0.0.1:${remote_port}" "${host}:${port}" >"$logfile" 2>&1 </dev/null &
   echo $! >"$pidfile"
@@ -3866,41 +3901,32 @@ else
     exit 1
   fi
   echo "Started noVNC on 127.0.0.1:${remote_port}"
+}
+
+target="${host}:${port}"
+pid=""
+if [ -s "$pidfile" ]; then
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+fi
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  existing_args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  case " $existing_args " in
+    *" ${target}"*)
+      echo "noVNC already running on 127.0.0.1:${remote_port}"
+      ;;
+    *)
+      pkill -P "$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+      echo "Restarting stale noVNC on 127.0.0.1:${remote_port} for ${target}"
+      start_novnc
+      ;;
+  esac
+else
+  start_novnc
 fi
 `, shellQuote(vmName), remotePort)
-	out, err := ssh(h.Target, script, 30*time.Second)
-	if err != nil {
-		return out, err
-	}
-
-	ctl := consoleControlPath(stateDir, h.Name, vmName)
-	_ = os.Remove(ctl)
-	args := []string{
-		"-f", "-N", "-M", "-S", ctl,
-		"-o", "BatchMode=yes",
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "ControlPersist=yes",
-		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort),
-		h.Target,
-	}
-	if tunnelOut, err := runCommand(20*time.Second, "ssh", args...); err != nil {
-		return out + tunnelOut, fmt.Errorf("failed to start SSH console tunnel: %w", err)
-	}
-	state := consoleState{Host: h.Name, Target: h.Target, VM: vmName, LocalPort: localPort, RemotePort: remotePort}
-	if err := writeConsoleState(stateDir, state); err != nil {
-		return out, err
-	}
-	consoleURL := noVNCURL(localPort)
-	opened := openBrowser(consoleURL)
-	if opened {
-		out += "\nConsole URL: " + consoleURL + "\nBrowser: requested local console URL"
-	} else {
-		out += "\nConsole URL: " + consoleURL
-	}
-	if adjusted {
-		out += fmt.Sprintf("\nLocal port %d was busy; using %d instead.", preferredLocalPort, localPort)
-	}
-	return strings.TrimSpace(out), nil
 }
 
 func noVNCURL(localPort int) string {
@@ -3931,6 +3957,7 @@ func closeConsole(h Host, vmName, stateDir string) (string, error) {
 	script := fmt.Sprintf(`
 pidfile="/tmp/vmrelay-novnc-%d.pid"
 if [ -s "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+  pkill -P "$(cat "$pidfile")" 2>/dev/null || true
   kill "$(cat "$pidfile")" 2>/dev/null || true
   rm -f "$pidfile"
   echo "Stopped remote noVNC on port %d."

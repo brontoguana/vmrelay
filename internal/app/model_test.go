@@ -647,6 +647,21 @@ func TestNoVNCURLUsesLowLatencyCursorSettings(t *testing.T) {
 	}
 }
 
+func TestConsoleRemoteScriptRestartsStaleNoVNCProxy(t *testing.T) {
+	script := consoleRemoteScript("Win11-Orig", 6316)
+	for _, want := range []string{
+		`target="${host}:${port}"`,
+		`existing_args="$(ps -p "$pid" -o args= 2>/dev/null || true)"`,
+		`Restarting stale noVNC`,
+		`pkill -P "$pid"`,
+		`start_novnc`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("console script missing %q:\n%s", want, script)
+		}
+	}
+}
+
 func TestPendingDiskImportValidation(t *testing.T) {
 	m := Model{
 		importDiskSource: "/home/alice/source.vmdk",

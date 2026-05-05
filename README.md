@@ -55,7 +55,7 @@ Inside the TUI:
 - Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, detach disks without deleting their image files, and eject selected CDROM/ISO media.
 - NIC management can attach an interface to a libvirt network such as `default`, defaulting to `e1000e` for stock Windows compatibility, and detach selected interfaces by MAC address.
 - Local port mappings are saved per workstation/user and run as SSH local forwards such as `127.0.0.1:8080 -> 127.0.0.1:8081` on the selected host.
-- VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`; console open falls back to the live libvirt XML VNC port if `domdisplay` is unhelpful, console URLs enable noVNC's local pointer dot and low-latency settings by default, and if the preferred local console port is busy, VMRelay automatically picks the next available local port.
+- VM consoles use the libvirt VNC display on the remote host, noVNC/websockify bound to remote `127.0.0.1`, and an SSH local forward to a browser URL on local `127.0.0.1`; console open falls back to the live libvirt XML VNC port if `domdisplay` is unhelpful, restarts stale noVNC proxies when libvirt assigns a new VNC port, enables noVNC's local pointer dot and low-latency settings by default, and automatically picks the next available local port if the preferred local console port is busy.
 - VMRelay imports legacy host definitions from `~/.config/vmrelay/hosts.d` when present.
 
 ## Ownership
