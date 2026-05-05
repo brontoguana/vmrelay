@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.32 - 2026-05-05
+
+- Changed VM service mappings to avoid SSHD configuration changes: SSH reverse tunnels now bind only remote `127.0.0.1`, and a remote bridge-bound relay exposes the stable VM endpoint.
+- VMRelay now prefers `systemd-socket-activate` plus `systemd-socket-proxyd` for the relay, falls back to `socat`, and installs `socat` during apt-based host setup.
+- Host setup no longer writes the VMRelay SSHD drop-in and removes the legacy VMRelay-managed drop-in when present and sshd validation allows it.
+- Verified on `iron` that `192.168.122.1:<vm-port>` can reach a local workstation HTTP service through the new loopback reverse tunnel plus systemd socket proxy relay.
+
 ## 0.2.31 - 2026-05-05
 
 - Hardened VM service mapping setup so VMRelay-managed SSH reverse forwards are scoped to the remote libvirt bridge address using `PermitListen <bridge-ip>:*` when the host supports it.
