@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.7 - 2026-05-05
+
+- Fixed browser console launch so an occupied preferred local console port no longer fails the operation; VMRelay now scans forward to the next available local port and reports the adjusted URL.
+- Added a focused test for local console port fallback behavior.
+
 ## 0.2.6 - 2026-05-05
 
 - Added a VM detail screen opened from the host VM list with Summary, Disks, NICs, and Actions tabs.

@@ -2507,11 +2507,12 @@ echo "Detached NIC ${mac}."
 }
 
 func openConsole(h Host, vmName, stateDir string) (string, error) {
-	localPort := stablePort("local:"+h.Name+":"+vmName, 4500, 1000)
-	remotePort := stablePort("remote:"+h.Name+":"+vmName, 6080, 1000)
-	if !portFree(localPort) {
-		return "", fmt.Errorf("local port %d is already in use", localPort)
+	preferredLocalPort := stablePort("local:"+h.Name+":"+vmName, 4500, 1000)
+	localPort, adjusted := firstFreePort(preferredLocalPort, 100)
+	if localPort == 0 {
+		return "", fmt.Errorf("no free local console port found near %d", preferredLocalPort)
 	}
+	remotePort := stablePort("remote:"+h.Name+":"+vmName, 6080, 1000)
 
 	script := fmt.Sprintf(`
 set -euo pipefail
@@ -2581,6 +2582,9 @@ fi
 		out += "\nConsole URL: " + url + "\nBrowser: requested local console URL"
 	} else {
 		out += "\nConsole URL: " + url
+	}
+	if adjusted {
+		out += fmt.Sprintf("\nLocal port %d was busy; using %d instead.", preferredLocalPort, localPort)
 	}
 	return strings.TrimSpace(out), nil
 }
@@ -2717,6 +2721,19 @@ func portFree(port int) bool {
 	}
 	_ = ln.Close()
 	return true
+}
+
+func firstFreePort(preferred, attempts int) (int, bool) {
+	if preferred < 1 || preferred > 65535 || attempts < 1 {
+		return 0, false
+	}
+	for i := 0; i < attempts && preferred+i <= 65535; i++ {
+		port := preferred + i
+		if portFree(port) {
+			return port, i != 0
+		}
+	}
+	return 0, false
 }
 
 func ssh(target, script string, timeout time.Duration) (string, error) {

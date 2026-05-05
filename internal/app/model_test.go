@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"regexp"
 	"strings"
 	"testing"
@@ -269,6 +270,29 @@ func TestPendingDiskImportValidation(t *testing.T) {
 	m.importDiskSource = "relative.vmdk"
 	if _, err := m.pendingDiskImport(); err == nil {
 		t.Fatal("expected relative source path to fail")
+	}
+}
+
+func TestFirstFreePortSkipsBusyPreferredPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve a local port: %v", err)
+	}
+	defer ln.Close()
+
+	preferred := ln.Addr().(*net.TCPAddr).Port
+	got, adjusted := firstFreePort(preferred, 100)
+	if got == 0 {
+		t.Fatalf("expected fallback port near %d", preferred)
+	}
+	if got == preferred {
+		t.Fatalf("expected busy preferred port %d to be skipped", preferred)
+	}
+	if !adjusted {
+		t.Fatalf("expected adjusted=true when preferred port is busy")
+	}
+	if !portFree(got) {
+		t.Fatalf("fallback port %d should be free", got)
 	}
 }
 
