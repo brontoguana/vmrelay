@@ -1813,12 +1813,29 @@ func parsePort(text string) (int, error) {
 func (m Model) statusLine() string {
 	s := m.styles()
 	if m.errText != "" {
-		return s.err.Render(firstLine(m.errText))
+		return s.err.Render(errorSummary(m.errText))
 	}
 	if m.status != "" {
 		return s.ok.Render(firstLine(m.status))
 	}
 	return ""
+}
+
+func errorSummary(text string) string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) > 1 && strings.Contains(lines[0], "exit status") {
+		return lines[0] + ": " + lines[1]
+	}
+	return lines[0]
 }
 
 func firstLine(text string) string {
@@ -2956,10 +2973,10 @@ case "$iso" in
 esac
 
 command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
-command -v qemu-img >/dev/null 2>&1 || { echo "qemu-img is missing; run setup for this host." >&2; exit 1; }
 virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
 virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
 [ -e "$iso" ] || { echo "ISO path does not exist: $iso" >&2; exit 1; }
+[ -r "$iso" ] || { echo "ISO path is not readable by $(whoami): $iso" >&2; exit 1; }
 if [ "$firmware" = "uefi" ]; then
   if [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovmf ] && [ ! -e /usr/share/qemu/OVMF.fd ]; then
     echo "UEFI firmware is missing; run setup or install ovmf on the host." >&2
@@ -2967,13 +2984,79 @@ if [ "$firmware" = "uefi" ]; then
   fi
 fi
 
+pool_target() {
+  virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1
+}
+
+pool_running() {
+  virsh -c qemu:///system pool-info "$1" 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' | grep -qx running
+}
+
+select_pool() {
+  for candidate in images default; do
+    if pool_running "$candidate"; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    target="$(pool_target "$candidate")"
+    if [ "$target" = "/var/lib/libvirt/images" ]; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
+  first="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
+  [ -n "$first" ] || { echo "No running libvirt storage pool found for VM disk creation." >&2; return 1; }
+  printf '%%s\n' "$first"
+}
+
+storage_pool="$(select_pool)"
+storage_target="$(pool_target "$storage_pool")"
+[ -n "$storage_target" ] || { echo "Could not determine target path for libvirt storage pool: $storage_pool" >&2; exit 1; }
+
 safe="$(printf '%%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
-disk="/var/lib/libvirt/images/${safe}.qcow2"
-if [ -e "$disk" ]; then echo "Disk already exists: $disk" >&2; exit 1; fi
-sudo -n install -d -m 0775 /var/lib/libvirt/images
-sudo -n qemu-img create -f qcow2 "$disk" "${disk_size}G"
-sudo -n chown libvirt-qemu:kvm "$disk" 2>/dev/null || sudo -n chown qemu:qemu "$disk" 2>/dev/null || true
-sudo -n chmod 0660 "$disk" 2>/dev/null || true
+disk_vol="${safe}.qcow2"
+if virsh -c qemu:///system vol-info --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1; then
+  echo "Disk volume already exists in pool ${storage_pool}: ${disk_vol}" >&2
+  exit 1
+fi
+vm_created=0
+tmp=""
+cleanup_create() {
+  if [ "${vm_created}" != "1" ]; then
+    virsh -c qemu:///system vol-delete --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1 || true
+  fi
+  [ -z "$tmp" ] || rm -f "$tmp"
+}
+trap cleanup_create EXIT
+virsh -c qemu:///system vol-create-as "$storage_pool" "$disk_vol" "${disk_size}G" --format qcow2 >/dev/null
+disk="$(virsh -c qemu:///system vol-path --pool "$storage_pool" "$disk_vol")"
+[ -n "$disk" ] || { echo "Could not resolve disk path for volume ${disk_vol}." >&2; exit 1; }
+
+stage_iso() {
+  source="$1"
+  case "$source" in
+    "$storage_target"/*) printf '%%s\n' "$source"; return 0 ;;
+  esac
+  size="$(stat -c %%s "$source")"
+  mtime="$(stat -c %%Y "$source")"
+  iso_base="$(basename "$source" | tr -c 'A-Za-z0-9_.-' '_' | cut -c 1-80)"
+  iso_vol="vmrelay-${safe}-${size}-${mtime}-${iso_base}"
+  if ! virsh -c qemu:///system vol-info --pool "$storage_pool" "$iso_vol" >/dev/null 2>&1; then
+    virsh -c qemu:///system vol-create-as "$storage_pool" "$iso_vol" "$size" --format raw >/dev/null
+    if ! virsh -c qemu:///system vol-upload --pool "$storage_pool" "$iso_vol" "$source"; then
+      virsh -c qemu:///system vol-delete --pool "$storage_pool" "$iso_vol" >/dev/null 2>&1 || true
+      echo "Failed to stage ISO into libvirt storage pool ${storage_pool}: ${source}" >&2
+      return 1
+    fi
+  fi
+  virsh -c qemu:///system vol-path --pool "$storage_pool" "$iso_vol"
+}
+
+install_iso="$(stage_iso "$iso")"
+[ -n "$install_iso" ] || { echo "Could not resolve staged ISO path for ${iso}." >&2; exit 1; }
 
 args=(
   --connect qemu:///system
@@ -2985,7 +3068,7 @@ args=(
 	  --graphics vnc,listen=127.0.0.1
 	  --input type=tablet,bus=usb
 	  --video virtio
-	  --cdrom "$iso"
+	  --cdrom "$install_iso"
   --os-variant detect=on,require=off
   --noautoconsole
   --wait 0
@@ -2994,24 +3077,31 @@ if [ "$firmware" = "uefi" ]; then
   args+=(--boot uefi)
 fi
 if ! virt-install "${args[@]}"; then
-  sudo -n rm -f "$disk" 2>/dev/null || true
+  virsh -c qemu:///system vol-delete --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1 || true
   exit 1
 fi
+vm_created=1
 
 uuid="$(virsh -c qemu:///system domuuid "$name")"
 policy=/var/lib/vmrelay/ownership.tsv
-[ -e "$policy" ] || sudo -n touch "$policy"
+policy_note=""
 tmp="$(mktemp)"
 if [ -r "$policy" ]; then awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp"; fi
 printf '%%s\t%%s\t%%s\t%%s\n' "$uuid" "$(whoami)" "$shared" '' >>"$tmp"
 if [ -w "$policy" ]; then
   cat "$tmp" >"$policy"
-else
+elif [ ! -e "$policy" ] && [ -w "$(dirname "$policy")" ]; then
+  cat "$tmp" >"$policy"
+  chmod 0664 "$policy" 2>/dev/null || true
+elif sudo -n true 2>/dev/null; then
+  sudo -n install -d -m 0775 "$(dirname "$policy")"
   sudo -n cp "$tmp" "$policy"
   sudo -n chmod 0664 "$policy"
+else
+  policy_note="Ownership policy was not updated because ${policy} is not writable and sudo needs a password."
 fi
-rm -f "$tmp"
 echo "Created VM ${name}. Open its console to complete the OS installer."
+[ -z "$policy_note" ] || echo "$policy_note"
 `, shellQuote(req.Name), req.MemoryMiB, req.CPUs, req.DiskGiB, shellQuote(req.DiskBus), shellQuote(req.ISO), shellQuote(req.Network), shellQuote(req.Firmware), shellQuote(sharedValue))
 	return ssh(h.Target, script, 10*time.Minute)
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.14 - 2026-05-05
+
+- Fixed VM creation on hosts where the SSH user can manage libvirt but does not have passwordless sudo: VMRelay now creates the boot disk through a running libvirt storage pool instead of `sudo qemu-img` in `/var/lib/libvirt/images`.
+- Fixed VM creation from user-home ISO paths such as `~/Documents/...iso` by staging the ISO into libvirt-readable storage when the original path is outside the selected storage pool.
+- Changed creation-time ownership recording to be non-fatal when `/var/lib/vmrelay/ownership.tsv` is not writable; the VM can still be created and VMRelay reports the ownership warning.
+- Improved visible error summaries so a remote stderr line, such as `sudo: a password is required`, appears with `exit status 1` instead of being hidden behind the generic status.
+- Verified on `iron` that the selected libvirt storage pool is `images` at `/var/lib/libvirt/images`, `simplehelp` has no passwordless sudo, and the selected Windows ISO lives under a home directory that qemu cannot traverse directly.
+
 ## 0.2.13 - 2026-05-05
 
 - Changed the create-VM ISO default from `/var/lib/libvirt/boot/` to the remote user's `~/Documents/`, falling back to the remote home directory if `Documents` is missing.

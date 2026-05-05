@@ -296,6 +296,14 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	}
 }
 
+func TestErrorSummaryIncludesRemoteOutputAfterExitStatus(t *testing.T) {
+	got := errorSummary("VM creation failed: exit status 1\nsudo: a password is required\n")
+	want := "VM creation failed: exit status 1: sudo: a password is required"
+	if got != want {
+		t.Fatalf("errorSummary() = %q, want %q", got, want)
+	}
+}
+
 func TestCreateVMWizardArrowKeysAndPresetFields(t *testing.T) {
 	m := Model{
 		config:           Config{Theme: "Classic"},
