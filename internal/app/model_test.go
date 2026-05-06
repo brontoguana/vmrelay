@@ -419,7 +419,7 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 			VM: VM{Name: "source-vm", State: "shut off"},
 		},
 	}
-	view := stripANSI(m.viewVMDetail(100, 24))
+	view := stripANSI(m.viewVMDetail(100, 28))
 	if !strings.Contains(view, "Duplicate") || !strings.Contains(view, "d: duplicate") {
 		t.Fatalf("actions tab should expose duplicate action:\n%s", view)
 	}
@@ -495,6 +495,33 @@ func TestVMActionsExposeRenameFlow(t *testing.T) {
 	}
 }
 
+func TestVMActionsExposeUSBTabletRepair(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmTab:      vmTabActions,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "running"},
+		},
+	}
+	view := stripANSI(m.viewVMDetail(100, 26))
+	if !strings.Contains(view, "Repair") || !strings.Contains(view, "t: add USB tablet input") {
+		t.Fatalf("actions tab should expose USB tablet repair:\n%s", view)
+	}
+	if !strings.Contains(m.helpText(), "t: tablet") {
+		t.Fatalf("actions help should advertise tablet repair: %q", m.helpText())
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if cmd == nil {
+		t.Fatal("tablet repair should start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeBusy || next.priorMode != modeVMDetail || !strings.Contains(next.status, "Repairing USB tablet input") {
+		t.Fatalf("tablet repair did not enter busy mode: %#v", next)
+	}
+}
+
 func TestDuplicateVMNameValidation(t *testing.T) {
 	m := Model{
 		vmDetail:        VMDetail{VM: VM{Name: "source-vm"}},
@@ -553,6 +580,21 @@ func TestRenameVMScriptUsesInactiveDomrename(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("rename script missing %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestRepairUSBTabletScriptAttachesConfigAndLive(t *testing.T) {
+	script := repairUSBTabletScript("source-vm")
+	for _, want := range []string{
+		"<input type='tablet' bus='usb'/>",
+		"dumpxml --inactive \"$vm\"",
+		"attach-device \"$vm\" \"$device_xml\" --config",
+		"attach-device \"$vm\" \"$device_xml\" --live",
+		"USB tablet input is already present",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("tablet repair script missing %q:\n%s", want, script)
 		}
 	}
 }

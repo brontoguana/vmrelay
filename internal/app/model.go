@@ -1139,6 +1139,14 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
 			return resultMsg{op: "share", output: out, err: err}
 		})
+	case "t":
+		if m.vmTab == vmTabActions {
+			vm := m.vmDetail.VM
+			return m.busy(modeVMDetail, "Repairing USB tablet input for "+vm.Name+"...", "tablet-repair", func() resultMsg {
+				out, err := repairUSBTablet(m.activeHost, vm.Name)
+				return resultMsg{op: "tablet-repair", output: out, err: err}
+			})
+		}
 	case "d":
 		if m.vmTab == vmTabActions {
 			m.mode = modeDuplicateVM
@@ -1577,7 +1585,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 		m.hostTab = hostTabVMs
 		return m.loadVMs(m.activeHost)
-	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach":
+	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach", "tablet-repair":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
 			m.status = msg.op + " complete."
@@ -1638,6 +1646,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "NIC attach failed: " + msg.err.Error()
 	case "nic-detach":
 		return "NIC detach failed: " + msg.err.Error()
+	case "tablet-repair":
+		return "USB tablet repair failed: " + msg.err.Error()
 	default:
 		return msg.op + " failed: " + msg.err.Error()
 	}
@@ -2298,6 +2308,9 @@ func (m Model) viewVMActions(width, height int) string {
 		"  o: open browser console",
 		"  c: stop console tunnel",
 		"",
+		"Repair",
+		"  t: add USB tablet input",
+		"",
 		"Ownership",
 		"  a: adopt unmanaged VM",
 		"  h: toggle shared/private",
@@ -2562,7 +2575,7 @@ func (m Model) helpText() string {
 			case vmTabNICs:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
 			case vmTabActions:
-				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership  e/d: rename/duplicate"
+				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  t: tablet  e/d: rename/duplicate"
 			default:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  r: refresh  p/f: power  o: console"
 			}
@@ -4195,6 +4208,73 @@ case "$state" in
 esac
 `, shellQuote(vmName), shellQuote(disk.Target))
 	return ssh(h.Target, script, 45*time.Second)
+}
+
+func repairUSBTablet(h Host, vmName string) (string, error) {
+	script := repairUSBTabletScript(vmName)
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func repairUSBTabletScript(vmName string) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+virsh -c qemu:///system dominfo "$vm" >/dev/null 2>&1 || { echo "VM not found: $vm" >&2; exit 1; }
+device_xml="$(mktemp)"
+cleanup() { rm -f "$device_xml"; }
+trap cleanup EXIT
+cat >"$device_xml" <<'XML'
+<input type='tablet' bus='usb'/>
+XML
+
+has_usb_tablet() {
+  mode="$1"
+  if [ "$mode" = "inactive" ]; then
+    virsh -c qemu:///system dumpxml --inactive "$vm"
+  else
+    virsh -c qemu:///system dumpxml "$vm"
+  fi | awk '/<input / && /type=.tablet./ && /bus=.usb./ { found=1 } END { exit found ? 0 : 1 }'
+}
+
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+changed_config=0
+changed_live=0
+live_note=""
+
+if ! has_usb_tablet inactive; then
+  virsh -c qemu:///system attach-device "$vm" "$device_xml" --config >/dev/null
+  changed_config=1
+fi
+
+case "$state" in
+  running*)
+    if ! has_usb_tablet live; then
+      live_err="$(mktemp)"
+      if virsh -c qemu:///system attach-device "$vm" "$device_xml" --live >/dev/null 2>"$live_err"; then
+        changed_live=1
+      else
+        live_note="$(tr '\n' ' ' <"$live_err" | sed 's/[[:space:]]*$//')"
+      fi
+      rm -f "$live_err"
+    fi
+    ;;
+esac
+
+if [ "$changed_config" = "0" ] && [ "$changed_live" = "0" ] && [ -z "$live_note" ]; then
+  echo "USB tablet input is already present on ${vm}."
+elif [ -n "$live_note" ]; then
+  echo "USB tablet input is present in the persistent config for ${vm}."
+  echo "Live attach did not apply: ${live_note}"
+  echo "Power off and start the VM for the tablet to take effect."
+elif [ "$changed_live" = "1" ]; then
+  echo "Added USB tablet input to ${vm} and applied it live."
+else
+  echo "Added USB tablet input to ${vm}."
+  case "$state" in
+    running*) echo "Power off and start the VM if the pointer does not improve immediately." ;;
+  esac
+fi
+`, shellQuote(vmName))
 }
 
 func attachNIC(h Host, vmName string, req nicAddRequest) (string, error) {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.35 - 2026-05-06
+
+- Added a VM detail Actions tab repair action: press `t` to add a USB tablet input device to an existing VM for better absolute-pointer behavior in graphical consoles.
+- The USB tablet repair action is idempotent, updates persistent VM XML, and attempts a live attach for running VMs when libvirt supports it.
+
 ## 0.2.34 - 2026-05-06
 
 - Changed VM state display so libvirt `shut off` is shown as `off`, and a locally requested graceful shutdown is shown as `shutdown...` until background refresh sees the VM stop.
