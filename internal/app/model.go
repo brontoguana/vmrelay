@@ -170,6 +170,7 @@ type Model struct {
 	updateInfo        updateInfo
 	updateExit        bool
 	vmRefreshInFlight bool
+	pendingShutdowns  map[string]time.Time
 
 	addName   string
 	addTarget string
@@ -327,6 +328,42 @@ func New(version string) (Model, error) {
 		priorMode:  modeHosts,
 		status:     status,
 	}, nil
+}
+
+func (m *Model) markShutdownRequested(vm VM) {
+	if m.pendingShutdowns == nil {
+		m.pendingShutdowns = make(map[string]time.Time)
+	}
+	m.pendingShutdowns[vmKey(m.activeHost, vm)] = time.Now()
+}
+
+func (m *Model) reconcilePendingShutdowns(vms []VM) {
+	if len(m.pendingShutdowns) == 0 {
+		return
+	}
+	for _, vm := range vms {
+		key := vmKey(m.activeHost, vm)
+		if !isRunningState(vm.State) {
+			delete(m.pendingShutdowns, key)
+			continue
+		}
+		if requestedAt, ok := m.pendingShutdowns[key]; ok && time.Since(requestedAt) > 5*time.Minute {
+			delete(m.pendingShutdowns, key)
+		}
+	}
+}
+
+func (m *Model) clearSelectedShutdownPending() {
+	if len(m.pendingShutdowns) == 0 {
+		return
+	}
+	if vm, ok := m.selectedVM(); ok {
+		delete(m.pendingShutdowns, vmKey(m.activeHost, vm))
+		return
+	}
+	if m.vmDetail.VM.Name != "" {
+		delete(m.pendingShutdowns, vmKey(m.activeHost, m.vmDetail.VM))
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -862,8 +899,9 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if vm, ok := m.selectedVM(); ok {
 			action := "start"
-			if strings.Contains(strings.ToLower(vm.State), "running") {
+			if isRunningState(vm.State) {
 				action = "shutdown"
+				m.markShutdownRequested(vm)
 			}
 			return m.busy(modeVMs, action+" "+vm.Name+"...", action, func() resultMsg {
 				out, err := lifecycle(m.activeHost, vm.Name, action)
@@ -1063,8 +1101,9 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		vm := m.vmDetail.VM
 		action := "start"
-		if strings.Contains(strings.ToLower(vm.State), "running") {
+		if isRunningState(vm.State) {
 			action = "shutdown"
+			m.markShutdownRequested(vm)
 		}
 		return m.busy(modeVMDetail, action+" "+vm.Name+"...", action, func() resultMsg {
 			out, err := lifecycle(m.activeHost, vm.Name, action)
@@ -1454,6 +1493,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.vms = msg.vms
+		m.reconcilePendingShutdowns(m.vms)
 		if m.vmCursor >= len(m.vms) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
@@ -1461,6 +1501,9 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	}
 	m.mode = m.priorMode
 	if msg.err != nil {
+		if msg.op == "shutdown" {
+			m.clearSelectedShutdownPending()
+		}
 		m.errText = failureText(msg, m)
 		if msg.output != "" {
 			m.errText += "\n" + strings.TrimSpace(msg.output)
@@ -1471,6 +1514,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	switch msg.op {
 	case "vms":
 		m.vms = msg.vms
+		m.reconcilePendingShutdowns(m.vms)
 		if m.vmCursor >= len(m.vms) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
@@ -1481,6 +1525,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 	case "vm-detail":
 		m.vmDetail = msg.detail
+		m.reconcilePendingShutdowns([]VM{m.vmDetail.VM})
 		if m.diskCursor >= len(m.vmDetail.Disks) {
 			m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
 		}
@@ -2093,7 +2138,7 @@ func (m Model) viewVMDetail(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
 	vm := m.vmDetail.VM
-	b.WriteString(fmt.Sprintf("VM: %s  %s\n\n", vm.Name, s.faint.Render(m.activeHost.Name+" / "+vm.State)))
+	b.WriteString(fmt.Sprintf("VM: %s  %s\n\n", vm.Name, s.faint.Render(m.activeHost.Name+" / "+m.vmStateLabel(vm))))
 	b.WriteString(m.vmTabLine(width-4) + "\n\n")
 	bodyH := height - 5
 	switch m.vmTab {
@@ -2139,7 +2184,6 @@ func (m Model) vmTabLine(width int) string {
 
 func (m Model) viewVMs(width, height int) string {
 	var b strings.Builder
-	s := m.styles()
 	bodyW := max(50, width)
 	nameW := max(24, bodyW-44)
 	if len(m.vms) == 0 {
@@ -2157,10 +2201,9 @@ func (m Model) viewVMs(width, height int) string {
 		if vm.Shared {
 			shared = "shared"
 		}
-		row := cursor + " " + cell(vm.Name, nameW) + " " + cell(vm.State, 12) + " " + cell(ownerLabel(vm.Owner), 14) + " " + cell(shared, 10)
-		if i == m.vmCursor {
-			row = s.selected.Render(row)
-		}
+		displayState := m.vmStateLabel(vm)
+		row := cursor + " " + cell(vm.Name, nameW) + " " + cell(displayState, 12) + " " + cell(ownerLabel(vm.Owner), 14) + " " + cell(shared, 10)
+		row = m.vmRowStyle(vm, i == m.vmCursor).Render(row)
 		b.WriteString(row + "\n")
 	}
 	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
@@ -2176,7 +2219,7 @@ func (m Model) viewVMSummary(width, height int) string {
 		"Identity",
 		"  Name:       " + vm.Name,
 		"  UUID:       " + valueOr(vm.UUID, "unknown"),
-		"  State:      " + valueOr(vm.State, "unknown"),
+		"  State:      " + valueOr(m.vmStateLabel(vm), "unknown"),
 		"  Owner:      " + ownerLabel(vm.Owner),
 		"  Visibility: " + shared,
 		"",
@@ -2557,6 +2600,85 @@ func ownerLabel(owner string) string {
 		return "unmanaged"
 	}
 	return owner
+}
+
+func (m Model) vmStateLabel(vm VM) string {
+	state := normalizeVMState(vm.State)
+	if m.shutdownPending(vm) && isRunningState(vm.State) {
+		return "shutdown..."
+	}
+	return state
+}
+
+func normalizeVMState(state string) string {
+	state = strings.TrimSpace(state)
+	switch strings.ToLower(state) {
+	case "":
+		return ""
+	case "shut off":
+		return "off"
+	case "in shutdown", "shutdown", "shutting down":
+		return "shutdown..."
+	default:
+		return state
+	}
+}
+
+func isRunningState(state string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(state)), "running")
+}
+
+func (m Model) shutdownPending(vm VM) bool {
+	if len(m.pendingShutdowns) == 0 {
+		return false
+	}
+	_, ok := m.pendingShutdowns[vmKey(m.activeHost, vm)]
+	return ok
+}
+
+func vmKey(h Host, vm VM) string {
+	id := vm.UUID
+	if id == "" {
+		id = vm.Name
+	}
+	return h.Name + "\x00" + h.Target + "\x00" + id
+}
+
+func (m Model) vmRowStyle(vm VM, selected bool) lipgloss.Style {
+	t := m.currentTheme()
+	style := lipgloss.NewStyle()
+	switch vmStateCategory(m.vmStateLabel(vm)) {
+	case "running":
+		style = style.Foreground(t.OK)
+	case "shutdown":
+		style = style.Foreground(t.Accent)
+	case "off":
+		style = style.Foreground(t.Muted).Faint(true)
+	case "error":
+		style = style.Foreground(t.Error)
+	default:
+		style = style.Foreground(t.Muted)
+	}
+	if selected {
+		style = style.Background(t.Selected)
+	}
+	return style
+}
+
+func vmStateCategory(state string) string {
+	state = strings.ToLower(strings.TrimSpace(state))
+	switch {
+	case state == "running" || strings.HasPrefix(state, "running "):
+		return "running"
+	case state == "off" || state == "shut off":
+		return "off"
+	case strings.Contains(state, "shutdown"):
+		return "shutdown"
+	case strings.Contains(state, "crash") || strings.Contains(state, "error"):
+		return "error"
+	default:
+		return "other"
+	}
 }
 
 func valueOr(value, fallback string) string {
@@ -3111,20 +3233,29 @@ echo "Host setup complete. VMRelay ownership state is /var/lib/vmrelay/ownership
 func listVMs(h Host) ([]VM, string, error) {
 	script := `
 set -euo pipefail
-policy=/var/lib/vmrelay/ownership.tsv
-if [ ! -r "$policy" ]; then policy=/dev/null; fi
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy=""
+fallback_owner="$(whoami)"
+if [ -r "$system_policy" ]; then
+  policy="$system_policy"
+  fallback_owner=""
+elif [ -r "$user_policy" ]; then
+  policy="$user_policy"
+fi
 virsh -c qemu:///system list --all --name | sed '/^$/d' | while IFS= read -r name; do
   uuid="$(virsh -c qemu:///system domuuid "$name" 2>/dev/null || true)"
   state="$(virsh -c qemu:///system domstate "$name" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
   owner=""
   shared="0"
-  if [ -n "$uuid" ]; then
+  if [ -n "$uuid" ] && [ -n "$policy" ]; then
     line="$(awk -F '\t' -v id="$uuid" '$1 == id { print; exit }' "$policy" 2>/dev/null || true)"
     if [ -n "$line" ]; then
       owner="$(printf '%s\n' "$line" | awk -F '\t' '{print $2}')"
       shared="$(printf '%s\n' "$line" | awk -F '\t' '{print $3}')"
     fi
   fi
+  if [ -z "$owner" ] && [ -n "$fallback_owner" ]; then owner="$fallback_owner"; fi
   printf 'VMRELAY_VM\t%s\t%s\t%s\t%s\t%s\n' "$name" "$uuid" "$state" "$owner" "$shared"
 done
 `
@@ -3166,19 +3297,28 @@ func getVMDetail(h Host, vm VM) (VMDetail, string, error) {
 	script := fmt.Sprintf(`
 set -euo pipefail
 vm=%s
-policy=/var/lib/vmrelay/ownership.tsv
-if [ ! -r "$policy" ]; then policy=/dev/null; fi
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy=""
+fallback_owner="$(whoami)"
+if [ -r "$system_policy" ]; then
+  policy="$system_policy"
+  fallback_owner=""
+elif [ -r "$user_policy" ]; then
+  policy="$user_policy"
+fi
 uuid="$(virsh -c qemu:///system domuuid "$vm" 2>/dev/null || true)"
 state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
 owner=""
 shared="0"
-if [ -n "$uuid" ]; then
+if [ -n "$uuid" ] && [ -n "$policy" ]; then
   line="$(awk -F '\t' -v id="$uuid" '$1 == id { print; exit }' "$policy" 2>/dev/null || true)"
   if [ -n "$line" ]; then
     owner="$(printf '%%s\n' "$line" | awk -F '\t' '{print $2}')"
     shared="$(printf '%%s\n' "$line" | awk -F '\t' '{print $3}')"
   fi
 fi
+if [ -z "$owner" ] && [ -n "$fallback_owner" ]; then owner="$fallback_owner"; fi
 info="$(virsh -c qemu:///system dominfo "$vm" 2>/dev/null || true)"
 cpus="$(printf '%%s\n' "$info" | awk -F: '$1 == "CPU(s)" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
 memory="$(printf '%%s\n' "$info" | awk -F: '$1 == "Max memory" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
@@ -3350,17 +3490,7 @@ if ! virsh -c qemu:///system shutdown "$vm" --mode acpi >/dev/null 2>"$err_file"
     exit 1
   fi
 fi
-deadline=$((SECONDS + 30))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
-  case "$state" in
-    running*) sleep 2 ;;
-    "") echo "Shutdown signal sent to $vm."; exit 0 ;;
-    *) echo "Shutdown complete. $vm is $state."; exit 0 ;;
-  esac
-done
-state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
-echo "Shutdown signal sent to $vm, but it is still ${state:-unknown} after 30s. If the guest ignores ACPI shutdown, use force off."
+echo "Shutdown requested for $vm."
 `, shellQuote(vmName))
 	}
 	return fmt.Sprintf("set -euo pipefail\nvirsh -c qemu:///system %s %s\n", shellWord(action), shellQuote(vmName))
@@ -3382,16 +3512,30 @@ func setOwnership(h Host, vm VM, shared bool, keepOwner bool) (string, error) {
 	}
 	script := fmt.Sprintf(`
 set -euo pipefail
-policy=/var/lib/vmrelay/ownership.tsv
-[ -e "$policy" ] || sudo -n touch "$policy"
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy="$system_policy"
+use_sudo=0
+if [ -w "$policy" ] || { [ ! -e "$policy" ] && [ -w "$(dirname "$policy")" ]; }; then
+  :
+elif sudo -n true 2>/dev/null; then
+  use_sudo=1
+  sudo -n install -d -m 0775 "$(dirname "$policy")"
+  sudo -n touch "$policy"
+else
+  policy="$user_policy"
+  mkdir -p "$(dirname "$policy")"
+  touch "$policy"
+fi
 tmp="$(mktemp)"
 if [ -r "$policy" ]; then awk -F '\t' -v id=%s '$1 != id { print }' "$policy" >"$tmp"; fi
 printf '%%s\t%%s\t%%s\t%%s\n' %s %s %s '' >>"$tmp"
-if [ -w "$policy" ]; then
-  cat "$tmp" >"$policy"
-else
+if [ "$use_sudo" = "1" ]; then
   sudo -n cp "$tmp" "$policy"
   sudo -n chmod 0664 "$policy"
+else
+  cat "$tmp" >"$policy"
+  chmod 0664 "$policy" 2>/dev/null || true
 fi
 rm -f "$tmp"
 echo "Ownership updated for %s."
@@ -3636,22 +3780,30 @@ for _ in 1 2 3; do
 done
 
 uuid="$(virsh -c qemu:///system domuuid "$name")"
-policy=/var/lib/vmrelay/ownership.tsv
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy="$system_policy"
+use_sudo=0
 policy_note=""
+if [ -w "$policy" ] || { [ ! -e "$policy" ] && [ -w "$(dirname "$policy")" ]; }; then
+  :
+elif sudo -n true 2>/dev/null; then
+  use_sudo=1
+  sudo -n install -d -m 0775 "$(dirname "$policy")"
+else
+  policy="$user_policy"
+  mkdir -p "$(dirname "$policy")"
+  policy_note="Ownership recorded in the per-user VMRelay policy because ${system_policy} is not writable."
+fi
 tmp="$(mktemp)"
 if [ -r "$policy" ]; then awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp"; fi
 printf '%%s\t%%s\t%%s\t%%s\n' "$uuid" "$(whoami)" "$shared" '' >>"$tmp"
-if [ -w "$policy" ]; then
-  cat "$tmp" >"$policy"
-elif [ ! -e "$policy" ] && [ -w "$(dirname "$policy")" ]; then
-  cat "$tmp" >"$policy"
-  chmod 0664 "$policy" 2>/dev/null || true
-elif sudo -n true 2>/dev/null; then
-  sudo -n install -d -m 0775 "$(dirname "$policy")"
+if [ "$use_sudo" = "1" ]; then
   sudo -n cp "$tmp" "$policy"
   sudo -n chmod 0664 "$policy"
 else
-  policy_note="Ownership policy was not updated because ${policy} is not writable and sudo needs a password."
+  cat "$tmp" >"$policy"
+  chmod 0664 "$policy" 2>/dev/null || true
 fi
 echo "Created VM ${name}. Open its console to complete the OS installer."
 [ -z "$policy_note" ] || echo "$policy_note"
@@ -3782,10 +3934,19 @@ case "$state" in
   running*|paused*|pmsuspended*) echo "Power off ${source} before duplicating it so disk contents are copied consistently." >&2; exit 1 ;;
 esac
 
-policy=/var/lib/vmrelay/ownership.tsv
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy=""
+fallback_owner="$(whoami)"
+if [ -r "$system_policy" ]; then
+  policy="$system_policy"
+  fallback_owner=""
+elif [ -r "$user_policy" ]; then
+  policy="$user_policy"
+fi
 source_shared=0
 source_uuid="$(virsh -c qemu:///system domuuid "$source" 2>/dev/null || true)"
-if [ -n "$source_uuid" ] && [ -r "$policy" ]; then
+if [ -n "$source_uuid" ] && [ -n "$policy" ]; then
   source_shared="$(awk -F '\t' -v id="$source_uuid" '$1 == id { print $3; exit }' "$policy" 2>/dev/null || true)"
 fi
 case "$source_shared" in 1|true|TRUE|yes|YES) source_shared=1 ;; *) source_shared=0 ;; esac
@@ -3876,15 +4037,28 @@ virsh -c qemu:///system define "$tmp" >/dev/null
 
 uuid="$(virsh -c qemu:///system domuuid "$name")"
 owner="$(whoami)"
-if [ -w "$policy" ]; then
-  tmp_policy="$(mktemp)"
-  awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp_policy" 2>/dev/null || true
-  printf '%%s\t%%s\t%%s\n' "$uuid" "$owner" "$source_shared" >>"$tmp_policy"
-  cat "$tmp_policy" >"$policy"
-  rm -f "$tmp_policy"
+write_policy="$system_policy"
+use_sudo=0
+if [ -w "$write_policy" ] || { [ ! -e "$write_policy" ] && [ -w "$(dirname "$write_policy")" ]; }; then
+  :
+elif sudo -n true 2>/dev/null; then
+  use_sudo=1
+  sudo -n install -d -m 0775 "$(dirname "$write_policy")"
 else
-  echo "Warning: could not record VMRelay ownership for ${name}; ownership policy is not writable." >&2
+  write_policy="$user_policy"
+  mkdir -p "$(dirname "$write_policy")"
 fi
+tmp_policy="$(mktemp)"
+if [ -r "$write_policy" ]; then awk -F '\t' -v id="$uuid" '$1 != id { print }' "$write_policy" >"$tmp_policy" 2>/dev/null || true; fi
+printf '%%s\t%%s\t%%s\n' "$uuid" "$owner" "$source_shared" >>"$tmp_policy"
+if [ "$use_sudo" = "1" ]; then
+  sudo -n cp "$tmp_policy" "$write_policy"
+  sudo -n chmod 0664 "$write_policy"
+else
+  cat "$tmp_policy" >"$write_policy"
+  chmod 0664 "$write_policy" 2>/dev/null || true
+fi
+rm -f "$tmp_policy"
 
 echo "Duplicated ${source} as ${name}."
 echo "The duplicate is powered off. Installer ISO media was ejected from the duplicate."

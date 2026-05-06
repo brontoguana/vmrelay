@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.34 - 2026-05-06
+
+- Changed VM state display so libvirt `shut off` is shown as `off`, and a locally requested graceful shutdown is shown as `shutdown...` until background refresh sees the VM stop.
+- Added state-colored VM rows in the VM list, with powered-off VMs dimmed.
+- Added a per-remote-user ownership fallback when `/var/lib/vmrelay/ownership.tsv` is unavailable, so hosts without writable system policy still show VMs as owned by the SSH user and can record VMRelay ownership under the remote user's data directory.
+
 ## 0.2.33 - 2026-05-06
 
 - Added a VM detail Actions tab rename flow: press `e`, edit the VM name, and press `Enter` to rename the powered-off VM with libvirt `domrename`.

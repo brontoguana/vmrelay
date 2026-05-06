@@ -222,30 +222,64 @@ func TestVMRefreshCanPreserveActionStatus(t *testing.T) {
 	}
 	updated, _ := m.updateResult(resultMsg{
 		op:     "vms",
-		status: "Shutdown signal sent to vm1, but it is still running after 30s.",
+		status: "Shutdown requested for vm1.",
 		vms:    []VM{{Name: "vm1", State: "running"}},
 	})
 	next := updated.(Model)
-	if !strings.Contains(next.status, "still running") {
+	if !strings.Contains(next.status, "Shutdown requested") {
 		t.Fatalf("VM refresh should preserve action status, got %q", next.status)
 	}
 }
 
-func TestShutdownLifecycleScriptSendsACPIAndReportsState(t *testing.T) {
+func TestShutdownLifecycleScriptSendsACPIAndReturnsPromptly(t *testing.T) {
 	script := lifecycleScript("vm1", "shutdown")
 	for _, want := range []string{
 		"shutdown \"$vm\" --mode acpi",
 		"domstate \"$vm\"",
-		"after 30s",
-		"use force off",
+		"Shutdown requested for $vm.",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("shutdown script missing %q:\n%s", want, script)
 		}
 	}
+	for _, old := range []string{"after 30s", "use force off", "deadline="} {
+		if strings.Contains(script, old) {
+			t.Fatalf("shutdown script should return after requesting shutdown, found %q:\n%s", old, script)
+		}
+	}
 	startScript := lifecycleScript("vm1", "start")
 	if strings.Contains(startScript, "--mode acpi") || !strings.Contains(startScript, "virsh -c qemu:///system start") {
 		t.Fatalf("start script should stay a direct lifecycle action:\n%s", startScript)
+	}
+}
+
+func TestPendingShutdownDisplaysTransitionState(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	vm := VM{Name: "vm1", UUID: "uuid-1", State: "running", Owner: "alice"}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		activeHost: host,
+		vms:        []VM{vm},
+	}
+	m.markShutdownRequested(vm)
+	if got := m.vmStateLabel(vm); got != "shutdown..." {
+		t.Fatalf("pending shutdown label = %q, want shutdown...", got)
+	}
+	m.reconcilePendingShutdowns([]VM{{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}})
+	if got := m.vmStateLabel(VM{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}); got != "off" {
+		t.Fatalf("completed shutdown label = %q, want off", got)
+	}
+}
+
+func TestVMRowStyleDimsOffVMs(t *testing.T) {
+	m := Model{config: Config{Theme: "Classic"}}
+	off := m.vmRowStyle(VM{State: "shut off"}, false)
+	if !off.GetFaint() {
+		t.Fatal("off VM row should be dimmed")
+	}
+	running := m.vmRowStyle(VM{State: "running"}, false)
+	if running.GetFaint() {
+		t.Fatal("running VM row should not be dimmed")
 	}
 }
 
@@ -267,7 +301,7 @@ func TestVMRowsKeepOwnerAndVisibilityAligned(t *testing.T) {
 		if strings.Contains(line, "VM ") && strings.Contains(line, "Visibility") {
 			header = line
 		}
-		if strings.Contains(line, "running") || strings.Contains(line, "shut off") {
+		if strings.Contains(line, "running") || strings.Contains(line, " off ") {
 			rows = append(rows, line)
 		}
 	}

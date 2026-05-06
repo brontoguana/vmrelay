@@ -49,7 +49,7 @@ Inside the TUI:
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`/`virt-clone`, `qemu-utils`, Python 3, OVMF/UEFI/Secure Boot firmware, `swtpm`, noVNC, websockify, and a lightweight mapping relay (`systemd-socket-proxyd` when present, `socat` as the apt-installed fallback), ensures the libvirt `default` NAT network is active/autostarted, then initializes a VMRelay libvirt storage pool at `/var/lib/vmrelay/images`.
 - Host detail screens include VM inventory, host config/readiness actions, and VM-accessible service mappings.
 - VM creation from the host VMs or Config tab creates a qcow2 boot disk through the VMRelay storage pool when present, falls back to existing active libvirt pools for older hosts, stages user-home ISOs into libvirt-readable storage when needed, starts a VNC installer VM with selectable disk bus, BIOS/UEFI firmware, device-level CDROM-first installer boot order, NAT networking with a Windows-compatible `e1000e` NIC, USB tablet input, and UEFI Secure Boot plus TPM 2.0 when UEFI is selected, sets guest reboot behavior to restart instead of shutting off, and records VMRelay ownership for the remote SSH user when the ownership policy is writable. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, VM names up to 80 characters, horizontally scrolling active text fields, and a read-only remote ISO picker rooted initially at the remote user's `~/Documents/`, with `~` paths accepted for ISO files.
-- VM inventory shows state plus VMRelay ownership status and refreshes quietly in the background about every 10 seconds while the VM list is open.
+- VM inventory shows state plus VMRelay ownership status and refreshes quietly in the background about every 10 seconds while the VM list is open. Powered-off VMs display as `off`, requested graceful shutdowns display as `shutdown...`, and rows are colored by state with off rows dimmed.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
 - VM actions include start, graceful ACPI shutdown with state reporting, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, powered-off VM rename, and powered-off VM duplication with editable new-name prompts.
 - Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, detach disks without deleting their image files, and eject selected CDROM/ISO media.
@@ -64,6 +64,7 @@ VMRelay manages ownership from the start of the TUI model.
 
 - VMs are system-wide libvirt resources on the remote host.
 - VMRelay ownership metadata lives on the remote host at `/var/lib/vmrelay/ownership.tsv`.
+- If that system policy is unavailable, VMRelay falls back to per-remote-user ownership metadata under the SSH user's data directory.
 - VMs can be adopted by the current remote SSH account.
 - Private VMs are intended for owner/admin visibility.
 - Shared VMs are visible to all VMRelay users for that host.
