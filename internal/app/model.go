@@ -184,6 +184,7 @@ type Model struct {
 	updateInfo        updateInfo
 	updateExit        bool
 	vmRefreshInFlight bool
+	pendingLaunches   map[string]time.Time
 	pendingShutdowns  map[string]time.Time
 
 	addName   string
@@ -234,15 +235,18 @@ type vmAction struct {
 }
 
 type resultMsg struct {
-	op     string
-	output string
-	status string
-	host   Host
-	vms    []VM
-	detail VMDetail
-	dir    string
-	files  []remoteEntry
-	err    error
+	op            string
+	output        string
+	status        string
+	host          Host
+	vms           []VM
+	detail        VMDetail
+	dir           string
+	files         []remoteEntry
+	vm            VM
+	background    bool
+	detailRefresh bool
+	err           error
 }
 
 type updateInfo struct {
@@ -357,19 +361,37 @@ func (m *Model) markShutdownRequested(vm VM) {
 	m.pendingShutdowns[vmKey(m.activeHost, vm)] = time.Now()
 }
 
-func (m *Model) reconcilePendingShutdowns(vms []VM) {
-	if len(m.pendingShutdowns) == 0 {
-		return
+func (m *Model) markLaunchRequested(vm VM) {
+	if m.pendingLaunches == nil {
+		m.pendingLaunches = make(map[string]time.Time)
 	}
+	m.pendingLaunches[vmKey(m.activeHost, vm)] = time.Now()
+}
+
+func (m *Model) reconcilePendingTransitions(vms []VM) {
 	for _, vm := range vms {
 		key := vmKey(m.activeHost, vm)
-		if !isRunningState(vm.State) {
+		if isRunningState(vm.State) {
+			delete(m.pendingLaunches, key)
+		} else {
 			delete(m.pendingShutdowns, key)
-			continue
+		}
+		if requestedAt, ok := m.pendingLaunches[key]; ok && time.Since(requestedAt) > 5*time.Minute {
+			delete(m.pendingLaunches, key)
 		}
 		if requestedAt, ok := m.pendingShutdowns[key]; ok && time.Since(requestedAt) > 5*time.Minute {
 			delete(m.pendingShutdowns, key)
 		}
+	}
+}
+
+func (m *Model) clearPendingTransition(h Host, vm VM, action string) {
+	key := vmKey(h, vm)
+	switch action {
+	case "start":
+		delete(m.pendingLaunches, key)
+	case "shutdown":
+		delete(m.pendingShutdowns, key)
 	}
 }
 
@@ -918,15 +940,7 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if vm, ok := m.selectedVM(); ok {
-			action := "start"
-			if isRunningState(vm.State) {
-				action = "shutdown"
-				m.markShutdownRequested(vm)
-			}
-			return m.busy(modeVMs, action+" "+vm.Name+"...", action, func() resultMsg {
-				out, err := lifecycle(m.activeHost, vm.Name, action)
-				return resultMsg{op: action, output: out, err: err}
-			})
+			return m.runPowerAction(vm, false)
 		}
 	case "f":
 		if m.hostTab != hostTabVMs {
@@ -1134,19 +1148,34 @@ func (m Model) moveVMActionCursor(delta int) Model {
 	return m
 }
 
+func (m Model) runPowerAction(vm VM, detailRefresh bool) (tea.Model, tea.Cmd) {
+	action := "start"
+	transition := "launch..."
+	status := "Launching " + vm.Name + "..."
+	if isRunningState(vm.State) {
+		action = "shutdown"
+		transition = "shutdown..."
+		status = "Shutdown requested for " + vm.Name + "."
+		m.markShutdownRequested(vm)
+	} else {
+		m.markLaunchRequested(vm)
+	}
+	m.status = status
+	m.errText = ""
+	h := m.activeHost
+	return m, func() tea.Msg {
+		out, err := lifecycle(h, vm.Name, action)
+		if strings.TrimSpace(out) == "" && err == nil {
+			out = transition + " " + vm.Name
+		}
+		return resultMsg{op: action, output: out, host: h, vm: vm, background: true, detailRefresh: detailRefresh, err: err}
+	}
+}
+
 func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
 	switch actionID {
 	case vmActionPower:
-		vm := m.vmDetail.VM
-		action := "start"
-		if isRunningState(vm.State) {
-			action = "shutdown"
-			m.markShutdownRequested(vm)
-		}
-		return m.busy(modeVMDetail, action+" "+vm.Name+"...", action, func() resultMsg {
-			out, err := lifecycle(m.activeHost, vm.Name, action)
-			return resultMsg{op: action, output: out, err: err}
-		})
+		return m.runPowerAction(m.vmDetail.VM, true)
 	case vmActionForceOff:
 		vm := m.vmDetail.VM
 		return m.busy(modeVMDetail, "Force off "+vm.Name+"...", "destroy", func() resultMsg {
@@ -1611,15 +1640,67 @@ func (m Model) updateCheck(msg updateCheckMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateVMRefreshTick() (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{vmRefreshTickCmd()}
-	if m.mode == modeVMs && m.hostTab == hostTabVMs && !m.vmRefreshInFlight && m.activeHost.Name != "" && m.activeHost.Target != "" {
-		h := m.activeHost
+	if m.vmRefreshInFlight || m.activeHost.Name == "" || m.activeHost.Target == "" {
+		return m, tea.Batch(cmds...)
+	}
+	h := m.activeHost
+	switch {
+	case m.mode == modeVMs && m.hostTab == hostTabVMs:
 		m.vmRefreshInFlight = true
-		cmds = append(cmds, func() tea.Msg {
-			vms, out, err := listVMs(h)
-			return resultMsg{op: "vms-auto", output: out, host: h, vms: vms, err: err}
-		})
+		cmds = append(cmds, backgroundVMsAutoCmd(h))
+	case m.mode == modeVMDetail && m.vmDetail.VM.Name != "":
+		vm := m.vmDetail.VM
+		m.vmRefreshInFlight = true
+		cmds = append(cmds, backgroundVMDetailAutoCmd(h, vm))
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func backgroundVMsAutoCmd(h Host) tea.Cmd {
+	return func() tea.Msg {
+		vms, out, err := listVMs(h)
+		return resultMsg{op: "vms-auto", output: out, host: h, vms: vms, err: err}
+	}
+}
+
+func backgroundVMDetailAutoCmd(h Host, vm VM) tea.Cmd {
+	return func() tea.Msg {
+		detail, out, err := getVMDetail(h, vm)
+		return resultMsg{op: "vm-detail-auto", output: out, host: h, detail: detail, err: err}
+	}
+}
+
+func (m Model) updateBackgroundLifecycleResult(msg resultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.clearPendingTransition(msg.host, msg.vm, msg.op)
+		m.errText = failureText(resultMsg{op: msg.op, err: msg.err}, m)
+		if msg.output != "" {
+			m.errText += "\n" + strings.TrimSpace(msg.output)
+		}
+		return m, nil
+	}
+	m.errText = ""
+	if status := strings.TrimSpace(msg.output); status != "" {
+		m.status = status
+	}
+	if msg.detailRefresh {
+		return m, backgroundVMDetailCmd(msg.host, msg.vm)
+	}
+	return m, backgroundVMsCmd(msg.host)
+}
+
+func backgroundVMsCmd(h Host) tea.Cmd {
+	return func() tea.Msg {
+		vms, out, err := listVMs(h)
+		return resultMsg{op: "vms-background", output: out, host: h, vms: vms, err: err}
+	}
+}
+
+func backgroundVMDetailCmd(h Host, vm VM) tea.Cmd {
+	return func() tea.Msg {
+		detail, out, err := getVMDetail(h, vm)
+		return resultMsg{op: "vm-detail-background", output: out, host: h, detail: detail, err: err}
+	}
 }
 
 func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
@@ -1629,11 +1710,52 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.vms = msg.vms
-		m.reconcilePendingShutdowns(m.vms)
+		m.reconcilePendingTransitions(m.vms)
 		if m.vmCursor >= len(m.vms) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
 		return m, nil
+	}
+	if msg.op == "vm-detail-auto" {
+		m.vmRefreshInFlight = false
+		if msg.err != nil || m.mode != modeVMDetail || m.activeHost.Name != msg.host.Name || m.activeHost.Target != msg.host.Target {
+			return m, nil
+		}
+		m.vmDetail = msg.detail
+		m.reconcilePendingTransitions([]VM{m.vmDetail.VM})
+		if m.diskCursor >= len(m.vmDetail.Disks) {
+			m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
+		}
+		if m.nicCursor >= len(m.vmDetail.NICs) {
+			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
+		}
+		return m, nil
+	}
+	if msg.op == "vms-background" {
+		if msg.err == nil && m.mode == modeVMs && m.hostTab == hostTabVMs && m.activeHost.Name == msg.host.Name && m.activeHost.Target == msg.host.Target {
+			m.vms = msg.vms
+			m.reconcilePendingTransitions(m.vms)
+			if m.vmCursor >= len(m.vms) {
+				m.vmCursor = max(0, len(m.vms)-1)
+			}
+		}
+		return m, nil
+	}
+	if msg.op == "vm-detail-background" {
+		if msg.err == nil && m.mode == modeVMDetail && m.activeHost.Name == msg.host.Name && m.activeHost.Target == msg.host.Target {
+			m.vmDetail = msg.detail
+			m.reconcilePendingTransitions([]VM{m.vmDetail.VM})
+			if m.diskCursor >= len(m.vmDetail.Disks) {
+				m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
+			}
+			if m.nicCursor >= len(m.vmDetail.NICs) {
+				m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
+			}
+		}
+		return m, nil
+	}
+	if msg.background && (msg.op == "start" || msg.op == "shutdown") {
+		return m.updateBackgroundLifecycleResult(msg)
 	}
 	m.mode = m.priorMode
 	if msg.err != nil {
@@ -1650,7 +1772,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	switch msg.op {
 	case "vms":
 		m.vms = msg.vms
-		m.reconcilePendingShutdowns(m.vms)
+		m.reconcilePendingTransitions(m.vms)
 		if m.vmCursor >= len(m.vms) {
 			m.vmCursor = max(0, len(m.vms)-1)
 		}
@@ -1661,7 +1783,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 	case "vm-detail":
 		m.vmDetail = msg.detail
-		m.reconcilePendingShutdowns([]VM{m.vmDetail.VM})
+		m.reconcilePendingTransitions([]VM{m.vmDetail.VM})
 		if m.diskCursor >= len(m.vmDetail.Disks) {
 			m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
 		}
@@ -2738,6 +2860,9 @@ func ownerLabel(owner string) string {
 
 func (m Model) vmStateLabel(vm VM) string {
 	state := normalizeVMState(vm.State)
+	if m.launchPending(vm) && !isRunningState(vm.State) {
+		return "launch..."
+	}
 	if m.shutdownPending(vm) && isRunningState(vm.State) {
 		return "shutdown..."
 	}
@@ -2770,6 +2895,14 @@ func (m Model) shutdownPending(vm VM) bool {
 	return ok
 }
 
+func (m Model) launchPending(vm VM) bool {
+	if len(m.pendingLaunches) == 0 {
+		return false
+	}
+	_, ok := m.pendingLaunches[vmKey(m.activeHost, vm)]
+	return ok
+}
+
 func vmKey(h Host, vm VM) string {
 	id := vm.UUID
 	if id == "" {
@@ -2785,6 +2918,8 @@ func (m Model) vmRowStyle(vm VM, selected bool) lipgloss.Style {
 	case "running":
 		style = style.Foreground(t.OK)
 	case "shutdown":
+		style = style.Foreground(t.Accent)
+	case "launch":
 		style = style.Foreground(t.Accent)
 	case "off":
 		style = style.Foreground(t.Muted)
@@ -2808,6 +2943,8 @@ func vmStateCategory(state string) string {
 		return "off"
 	case strings.Contains(state, "shutdown"):
 		return "shutdown"
+	case strings.Contains(state, "launch"):
+		return "launch"
 	case strings.Contains(state, "crash") || strings.Contains(state, "error"):
 		return "error"
 	default:

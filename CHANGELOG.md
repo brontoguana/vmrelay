@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.38 - 2026-05-06
+
+- Changed VM start and graceful shutdown actions to run in the background without switching to the temporary busy screen.
+- VM power actions now update the visible state immediately as `launch...` or `shutdown...`, then refresh VM inventory/detail in place; VM detail now also participates in the quiet 10-second state refresh.
+
 ## 0.2.37 - 2026-05-06
 
 - Brightened powered-off VM rows by removing the terminal faint attribute while keeping the muted state color.

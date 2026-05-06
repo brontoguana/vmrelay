@@ -168,11 +168,26 @@ func TestVMRefreshTickStartsSilentInventoryLoad(t *testing.T) {
 		t.Fatal("VM refresh tick should return a command")
 	}
 
+	m = Model{
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		vmDetail:   VMDetail{VM: VM{Name: "vm1"}},
+	}
+	updated, cmd = m.updateVMRefreshTick()
+	next = updated.(Model)
+	if !next.vmRefreshInFlight {
+		t.Fatal("VM detail refresh tick should mark background refresh in flight")
+	}
+	if cmd == nil {
+		t.Fatal("VM detail refresh tick should return a command")
+	}
+
 	m.mode = modeHosts
+	m.vmRefreshInFlight = false
 	updated, _ = m.updateVMRefreshTick()
 	next = updated.(Model)
 	if next.vmRefreshInFlight {
-		t.Fatal("VM refresh tick should not start inventory load outside VM list")
+		t.Fatal("VM refresh tick should not start a load outside VM screens")
 	}
 }
 
@@ -210,6 +225,35 @@ func TestAutoVMRefreshUpdatesRowsWithoutChangingStatus(t *testing.T) {
 	next = updated.(Model)
 	if len(next.vms) != 1 || next.vms[0].Name != "new" {
 		t.Fatalf("stale auto refresh should be ignored: %#v", next.vms)
+	}
+}
+
+func TestAutoVMDetailRefreshUpdatesDetailWithoutChangingStatus(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	m := Model{
+		mode:              modeVMDetail,
+		activeHost:        host,
+		status:            "User-facing status stays put.",
+		vmRefreshInFlight: true,
+		vmDetail:          VMDetail{VM: VM{Name: "old", State: "running"}},
+	}
+	updated, cmd := m.updateResult(resultMsg{
+		op:     "vm-detail-auto",
+		host:   host,
+		detail: VMDetail{VM: VM{Name: "old", State: "shut off"}},
+	})
+	if cmd != nil {
+		t.Fatal("auto VM detail refresh result should not trigger another command")
+	}
+	next := updated.(Model)
+	if next.vmRefreshInFlight {
+		t.Fatal("auto VM detail refresh result should clear in-flight state")
+	}
+	if next.status != m.status {
+		t.Fatalf("auto VM detail refresh changed status: %q", next.status)
+	}
+	if next.vmDetail.VM.State != "shut off" {
+		t.Fatalf("auto VM detail refresh did not replace detail: %#v", next.vmDetail)
 	}
 }
 
@@ -265,9 +309,95 @@ func TestPendingShutdownDisplaysTransitionState(t *testing.T) {
 	if got := m.vmStateLabel(vm); got != "shutdown..." {
 		t.Fatalf("pending shutdown label = %q, want shutdown...", got)
 	}
-	m.reconcilePendingShutdowns([]VM{{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}})
+	m.reconcilePendingTransitions([]VM{{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}})
 	if got := m.vmStateLabel(VM{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}); got != "off" {
 		t.Fatalf("completed shutdown label = %q, want off", got)
+	}
+}
+
+func TestPendingLaunchDisplaysTransitionState(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	vm := VM{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		activeHost: host,
+		vms:        []VM{vm},
+	}
+	m.markLaunchRequested(vm)
+	if got := m.vmStateLabel(vm); got != "launch..." {
+		t.Fatalf("pending launch label = %q, want launch...", got)
+	}
+	m.reconcilePendingTransitions([]VM{{Name: "vm1", UUID: "uuid-1", State: "running", Owner: "alice"}})
+	if got := m.vmStateLabel(VM{Name: "vm1", UUID: "uuid-1", State: "running", Owner: "alice"}); got != "running" {
+		t.Fatalf("completed launch label = %q, want running", got)
+	}
+}
+
+func TestListPowerActionRunsInBackground(t *testing.T) {
+	vm := VM{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMs,
+		hostTab:    hostTabVMs,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		vms:        []VM{vm},
+	}
+	updated, cmd := m.updateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd == nil {
+		t.Fatal("power action should start a background command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMs {
+		t.Fatalf("power action should keep VM list visible, got mode %v", next.mode)
+	}
+	if got := next.vmStateLabel(vm); got != "launch..." {
+		t.Fatalf("power action label = %q, want launch...", got)
+	}
+}
+
+func TestDetailPowerActionRunsInBackground(t *testing.T) {
+	vm := VM{Name: "vm1", UUID: "uuid-1", State: "running", Owner: "alice"}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		vmDetail:   VMDetail{VM: vm},
+	}
+	updated, cmd := m.runVMAction(vmActionPower)
+	if cmd == nil {
+		t.Fatal("power action should start a background command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMDetail {
+		t.Fatalf("power action should keep VM detail visible, got mode %v", next.mode)
+	}
+	if got := next.vmStateLabel(vm); got != "shutdown..." {
+		t.Fatalf("power action label = %q, want shutdown...", got)
+	}
+}
+
+func TestBackgroundLifecycleFailureClearsTransition(t *testing.T) {
+	vm := VM{Name: "vm1", UUID: "uuid-1", State: "shut off", Owner: "alice"}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMs,
+		activeHost: Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		vms:        []VM{vm},
+	}
+	m.markLaunchRequested(vm)
+	updated, cmd := m.updateResult(resultMsg{op: "start", host: m.activeHost, vm: vm, background: true, err: errTest("exit status 1")})
+	if cmd != nil {
+		t.Fatal("failed background lifecycle action should not start a refresh command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMs {
+		t.Fatalf("failed background action should keep current mode, got %v", next.mode)
+	}
+	if got := next.vmStateLabel(vm); got == "launch..." {
+		t.Fatalf("failed background action should clear launch transition, got %q", got)
+	}
+	if !strings.Contains(next.errText, "start failed") {
+		t.Fatalf("failed background action should report error, got %q", next.errText)
 	}
 }
 
