@@ -385,11 +385,11 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 			VM: VM{Name: "source-vm", State: "shut off"},
 		},
 	}
-	view := stripANSI(m.viewVMDetail(100, 20))
+	view := stripANSI(m.viewVMDetail(100, 24))
 	if !strings.Contains(view, "Duplicate") || !strings.Contains(view, "d: duplicate") {
 		t.Fatalf("actions tab should expose duplicate action:\n%s", view)
 	}
-	if !strings.Contains(m.helpText(), "d: duplicate") {
+	if !strings.Contains(m.helpText(), "rename/duplicate") {
 		t.Fatalf("actions help should advertise duplicate: %q", m.helpText())
 	}
 	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -418,6 +418,49 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 	}
 }
 
+func TestVMActionsExposeRenameFlow(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmTab:      vmTabActions,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "shut off"},
+		},
+	}
+	view := stripANSI(m.viewVMDetail(100, 22))
+	if !strings.Contains(view, "Rename") || !strings.Contains(view, "e: rename") {
+		t.Fatalf("actions tab should expose rename action:\n%s", view)
+	}
+	if !strings.Contains(m.helpText(), "rename") {
+		t.Fatalf("actions help should advertise rename: %q", m.helpText())
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd != nil {
+		t.Fatal("opening rename form should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeRenameVM || next.renameVMName != "source-vm" {
+		t.Fatalf("rename action did not open form with current name: %#v", next)
+	}
+	form := stripANSI(next.viewRenameVM(80, 16))
+	if !strings.Contains(form, "Current:    source-vm") || !strings.Contains(form, "> New name: source-vm") {
+		t.Fatalf("rename form missing current/new name:\n%s", form)
+	}
+	if help := next.helpText(); strings.Contains(help, "q: quit") || !strings.Contains(help, "type name") {
+		t.Fatalf("rename footer should be a scoped form footer, got %q", help)
+	}
+	next.renameVMName = "renamed"
+	updated, cmd = next.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Fatal("typing q in rename form should not quit")
+	}
+	next = updated.(Model)
+	if next.renameVMName != "renamedq" {
+		t.Fatalf("typing q should edit the rename VM name, got %q", next.renameVMName)
+	}
+}
+
 func TestDuplicateVMNameValidation(t *testing.T) {
 	m := Model{
 		vmDetail:        VMDetail{VM: VM{Name: "source-vm"}},
@@ -441,6 +484,42 @@ func TestDuplicateVMNameValidation(t *testing.T) {
 	long := strings.Repeat("a", maxVMNameRunes)
 	if got := suggestedDuplicateName(long); len([]rune(got)) != maxVMNameRunes || !strings.HasSuffix(got, "-copy") {
 		t.Fatalf("suggested duplicate name should be capped with suffix, got %q (%d runes)", got, len([]rune(got)))
+	}
+}
+
+func TestRenameVMNameValidation(t *testing.T) {
+	m := Model{
+		vmDetail:     VMDetail{VM: VM{Name: "source-vm"}},
+		renameVMName: "renamed-vm",
+	}
+	name, err := m.pendingRenameVMName()
+	if err != nil {
+		t.Fatalf("expected rename name to validate: %v", err)
+	}
+	if name != "renamed-vm" {
+		t.Fatalf("unexpected rename name: %q", name)
+	}
+	m.renameVMName = "source-vm"
+	if _, err := m.pendingRenameVMName(); err == nil {
+		t.Fatal("expected rename name matching current VM to fail")
+	}
+	m.renameVMName = "bad name"
+	if _, err := m.pendingRenameVMName(); err == nil {
+		t.Fatal("expected rename name with spaces to fail")
+	}
+}
+
+func TestRenameVMScriptUsesInactiveDomrename(t *testing.T) {
+	script := renameVMScript("source-vm", "renamed-vm")
+	for _, want := range []string{
+		"domstate \"$source\"",
+		"Power off ${source} before renaming it",
+		"domrename \"$source\" \"$name\"",
+		"VM UUID is unchanged",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("rename script missing %q:\n%s", want, script)
+		}
 	}
 }
 

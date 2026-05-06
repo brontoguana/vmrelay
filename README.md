@@ -37,7 +37,7 @@ Inside the TUI:
 9. In VM detail, use Summary, Disks, NICs, and Actions tabs.
 10. In Disks, press `n` to create and attach a qcow2 disk, `i` to import/convert/attach an existing disk, `enter` to make the selected disk first in boot order, or `x` to detach the selected disk/eject selected ISO media.
 11. In NICs, press `n` to attach a libvirt network NIC or `x` to detach the selected NIC.
-12. In Actions, press `d` to duplicate a powered-off VM, type the new VM name, then press `Enter`.
+12. In Actions, press `e` to rename a powered-off VM or `d` to duplicate a powered-off VM, type the new VM name, then press `Enter`.
 13. In Mappings, press `n` to add a VM-accessible service mapping and `e` to start or stop it. VMs connect to the VM endpoint shown in that table.
 
 ## Capabilities
@@ -51,7 +51,7 @@ Inside the TUI:
 - VM creation from the host VMs or Config tab creates a qcow2 boot disk through the VMRelay storage pool when present, falls back to existing active libvirt pools for older hosts, stages user-home ISOs into libvirt-readable storage when needed, starts a VNC installer VM with selectable disk bus, BIOS/UEFI firmware, device-level CDROM-first installer boot order, NAT networking with a Windows-compatible `e1000e` NIC, USB tablet input, and UEFI Secure Boot plus TPM 2.0 when UEFI is selected, sets guest reboot behavior to restart instead of shutting off, and records VMRelay ownership for the remote SSH user when the ownership policy is writable. The creation wizard supports arrow-key field movement, preset cycling, Yes/No shared selection, VM names up to 80 characters, horizontally scrolling active text fields, and a read-only remote ISO picker rooted initially at the remote user's `~/Documents/`, with `~` paths accepted for ISO files.
 - VM inventory shows state plus VMRelay ownership status and refreshes quietly in the background about every 10 seconds while the VM list is open.
 - VM detail screens show summary, disks, NICs, and actions for the selected VM.
-- VM actions include start, graceful ACPI shutdown with state reporting, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, and powered-off VM duplication with an editable new-name prompt.
+- VM actions include start, graceful ACPI shutdown with state reporting, force off, refresh, adopt ownership, share/private toggle, browser console open, console stop, powered-off VM rename, and powered-off VM duplication with editable new-name prompts.
 - Disk management can create qcow2 disks, import existing remote disk images, auto-convert non-qcow2 sources through `qemu-img convert`, attach disks persistently, set the selected disk as the VM's first boot disk, detach disks without deleting their image files, and eject selected CDROM/ISO media.
 - NIC management can attach an interface to a libvirt network such as `default`, defaulting to `e1000e` for stock Windows compatibility, and detach selected interfaces by MAC address.
 - VM service mappings are saved per workstation/user. VMs connect to the VM endpoint shown on the Mappings page, normally `192.168.122.1:<vm-port>`, and VMRelay forwards that back to `127.0.0.1:<local-service-port>` on the local workstation. The bridge address is shared by every VM on the host's default NAT network, so it does not change per VM or per guest reboot. VMRelay keeps the SSH reverse tunnel bound to remote `127.0.0.1` and runs a small bridge-bound relay with `systemd-socket-proxyd` or `socat` so no SSHD configuration change is required.

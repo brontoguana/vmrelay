@@ -94,6 +94,7 @@ const (
 	modeImportDisk
 	modeAddNIC
 	modeDuplicateVM
+	modeRenameVM
 	modeTheme
 	modeUpdate
 	modeBusy
@@ -208,6 +209,7 @@ type Model struct {
 	addNICField  int
 
 	duplicateVMName string
+	renameVMName    string
 }
 
 type resultMsg struct {
@@ -386,6 +388,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewAddNIC(innerW, contentH))
 	case modeDuplicateVM:
 		b.WriteString(m.viewDuplicateVM(innerW, contentH))
+	case modeRenameVM:
+		b.WriteString(m.viewRenameVM(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeUpdate:
@@ -408,14 +412,14 @@ func (m Model) View() string {
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeAddMapping) {
+	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeAddMapping) {
 		return m, tea.Quit
 	}
 	if msg.String() == "?" {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -445,6 +449,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddNICKey(msg)
 	case modeDuplicateVM:
 		return m.updateDuplicateVMKey(msg)
+	case modeRenameVM:
+		return m.updateRenameVMKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
 	case modeUpdate:
@@ -1101,6 +1107,13 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "Enter a new VM name for the duplicate."
 			m.errText = ""
 		}
+	case "e":
+		if m.vmTab == vmTabActions {
+			m.mode = modeRenameVM
+			m.renameVMName = m.vmDetail.VM.Name
+			m.status = "Enter the new VM name."
+			m.errText = ""
+		}
 	case "n":
 		switch m.vmTab {
 		case vmTabDisks:
@@ -1163,6 +1176,33 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				out, err := setBootDisk(m.activeHost, vm.Name, disk)
 				return resultMsg{op: "disk-boot", output: out, err: err}
 			})
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateRenameVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled VM rename."
+		m.errText = ""
+	case "enter":
+		name, err := m.pendingRenameVMName()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		source := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Renaming "+source.Name+" to "+name+"...", "vm-rename", func() resultMsg {
+			out, err := renameVM(m.activeHost, source.Name, name)
+			return resultMsg{op: "vm-rename", output: out, detail: VMDetail{VM: VM{Name: name}}, err: err}
+		})
+	case "backspace", "ctrl+h":
+		m.renameVMName = trimLastRune(m.renameVMName)
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.renameVMName = appendLimitedRunes(m.renameVMName, msg.String(), maxVMNameRunes)
 		}
 	}
 	return m, nil
@@ -1475,6 +1515,16 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 		m.hostTab = hostTabVMs
 		return m.loadVMs(m.activeHost)
+	case "vm-rename":
+		actionStatus := strings.TrimSpace(msg.output)
+		if actionStatus == "" {
+			actionStatus = "VM renamed."
+		}
+		renamed := m.vmDetail.VM
+		if msg.detail.VM.Name != "" {
+			renamed.Name = msg.detail.VM.Name
+		}
+		return m.loadVMDetailWithStatus(m.activeHost, renamed, actionStatus)
 	case "vm-create":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1529,6 +1579,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "VM creation failed: " + msg.err.Error()
 	case "vm-duplicate":
 		return "VM duplicate failed: " + msg.err.Error()
+	case "vm-rename":
+		return "VM rename failed: " + msg.err.Error()
 	case "disk-create":
 		return "Disk creation failed: " + msg.err.Error()
 	case "disk-import":
@@ -1770,6 +1822,17 @@ func (m Model) pendingDuplicateVMName() (string, error) {
 	}
 	if name == m.vmDetail.VM.Name {
 		return "", fmt.Errorf("new VM name must be different from the source VM")
+	}
+	return name, nil
+}
+
+func (m Model) pendingRenameVMName() (string, error) {
+	name := strings.TrimSpace(m.renameVMName)
+	if err := validateVMName(name, "new VM name"); err != nil {
+		return "", err
+	}
+	if name == m.vmDetail.VM.Name {
+		return "", fmt.Errorf("new VM name must be different from the current VM name")
 	}
 	return name, nil
 }
@@ -2196,6 +2259,9 @@ func (m Model) viewVMActions(width, height int) string {
 		"  a: adopt unmanaged VM",
 		"  h: toggle shared/private",
 		"",
+		"Rename",
+		"  e: rename VM",
+		"",
 		"Duplicate",
 		"  d: duplicate to new VM name",
 		"",
@@ -2376,6 +2442,14 @@ func (m Model) viewDuplicateVM(width, height int) string {
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
+func (m Model) viewRenameVM(width, height int) string {
+	valueW := max(12, width-22)
+	body := fmt.Sprintf("Rename VM\n\nCurrent:    %s\n> New name: %s\n\nType the exact new VM name.\nThe VM must be powered off because libvirt renames inactive domains only.\nVMRelay ownership is preserved because ownership is stored by VM UUID.\nEnter renames. Esc cancels.",
+		m.vmDetail.VM.Name,
+		clipTextTail(m.renameVMName, valueW))
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) viewThemes(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
@@ -2445,7 +2519,7 @@ func (m Model) helpText() string {
 			case vmTabNICs:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
 			case vmTabActions:
-				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership  d: duplicate"
+				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  a/h: ownership  e/d: rename/duplicate"
 			default:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  r: refresh  p/f: power  o: console"
 			}
@@ -2465,6 +2539,8 @@ func (m Model) helpText() string {
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
 		case modeDuplicateVM:
 			return "type name  enter: duplicate  esc: cancel"
+		case modeRenameVM:
+			return "type name  enter: rename  esc: cancel"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		case modeUpdate:
@@ -2473,7 +2549,7 @@ func (m Model) helpText() string {
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h/d. Mappings: n add VM service, e start/stop, d remove."
+	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h/e/d. Mappings: n add VM service, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
@@ -3814,6 +3890,40 @@ echo "Duplicated ${source} as ${name}."
 echo "The duplicate is powered off. Installer ISO media was ejected from the duplicate."
 `, shellQuote(sourceName), shellQuote(newName))
 	return ssh(h.Target, script, 4*time.Hour)
+}
+
+func renameVM(h Host, sourceName, newName string) (string, error) {
+	if sourceName == "" {
+		return "", fmt.Errorf("source VM name is missing")
+	}
+	if err := validateVMName(newName, "new VM name"); err != nil {
+		return "", err
+	}
+	if sourceName == newName {
+		return "", fmt.Errorf("new VM name must be different from the current VM name")
+	}
+	script := renameVMScript(sourceName, newName)
+	return ssh(h.Target, script, 45*time.Second)
+}
+
+func renameVMScript(sourceName, newName string) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+source=%s
+name=%s
+virsh -c qemu:///system dominfo "$source" >/dev/null 2>&1 || { echo "VM not found: $source" >&2; exit 1; }
+if virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1; then
+  echo "VM already exists: $name" >&2
+  exit 1
+fi
+state="$(virsh -c qemu:///system domstate "$source" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+case "$state" in
+  running*|paused*|pmsuspended*) echo "Power off ${source} before renaming it; libvirt only renames inactive domains." >&2; exit 1 ;;
+esac
+virsh -c qemu:///system domrename "$source" "$name" >/dev/null
+echo "Renamed ${source} to ${name}."
+echo "VMRelay ownership is preserved because the VM UUID is unchanged."
+`, shellQuote(sourceName), shellQuote(newName))
 }
 
 func detachDisk(h Host, vmName string, disk VMDisk) (string, error) {

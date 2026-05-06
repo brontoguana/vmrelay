@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.33 - 2026-05-06
+
+- Added a VM detail Actions tab rename flow: press `e`, edit the VM name, and press `Enter` to rename the powered-off VM with libvirt `domrename`.
+- The rename form has a scoped footer with no app-level quit action, and `q` is entered as normal text while editing the new name.
+- Rename preserves VMRelay ownership because the VM UUID is unchanged.
+
 ## 0.2.32 - 2026-05-05
 
 - Changed VM service mappings to avoid SSHD configuration changes: SSH reverse tunnels now bind only remote `127.0.0.1`, and a remote bridge-bound relay exposes the stable VM endpoint.
