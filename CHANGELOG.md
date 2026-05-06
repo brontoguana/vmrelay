@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.36 - 2026-05-06
+
+- Changed the VM detail Actions tab from single-letter action shortcuts to a selectable action menu.
+- Actions are selected with Up/Down and run with Enter; the footer now advertises the menu flow instead of assigning a key to every action.
+
 ## 0.2.35 - 2026-05-06
 
 - Added a VM detail Actions tab repair action: press `t` to add a USB tablet input device to an existing VM for better absolute-pointer behavior in graphical consoles.

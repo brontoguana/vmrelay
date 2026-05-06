@@ -420,13 +420,14 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 		},
 	}
 	view := stripANSI(m.viewVMDetail(100, 28))
-	if !strings.Contains(view, "Duplicate") || !strings.Contains(view, "d: duplicate") {
+	if !strings.Contains(view, "Duplicate") || !strings.Contains(view, "Duplicate to new VM name") {
 		t.Fatalf("actions tab should expose duplicate action:\n%s", view)
 	}
-	if !strings.Contains(m.helpText(), "rename/duplicate") {
+	if !strings.Contains(m.helpText(), "up/down: choose") || strings.Contains(m.helpText(), "rename/duplicate") {
 		t.Fatalf("actions help should advertise duplicate: %q", m.helpText())
 	}
-	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m.vmActionCursor = vmActionDuplicate
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("opening duplicate form should not start a command")
 	}
@@ -462,14 +463,15 @@ func TestVMActionsExposeRenameFlow(t *testing.T) {
 			VM: VM{Name: "source-vm", State: "shut off"},
 		},
 	}
-	view := stripANSI(m.viewVMDetail(100, 22))
-	if !strings.Contains(view, "Rename") || !strings.Contains(view, "e: rename") {
+	view := stripANSI(m.viewVMDetail(100, 24))
+	if !strings.Contains(view, "Rename") || !strings.Contains(view, "Rename VM") {
 		t.Fatalf("actions tab should expose rename action:\n%s", view)
 	}
-	if !strings.Contains(m.helpText(), "rename") {
+	if !strings.Contains(m.helpText(), "enter: run") || strings.Contains(m.helpText(), "e/d") {
 		t.Fatalf("actions help should advertise rename: %q", m.helpText())
 	}
-	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m.vmActionCursor = vmActionRename
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("opening rename form should not start a command")
 	}
@@ -506,19 +508,60 @@ func TestVMActionsExposeUSBTabletRepair(t *testing.T) {
 		},
 	}
 	view := stripANSI(m.viewVMDetail(100, 26))
-	if !strings.Contains(view, "Repair") || !strings.Contains(view, "t: add USB tablet input") {
+	if !strings.Contains(view, "Repair") || !strings.Contains(view, "Add USB tablet input") {
 		t.Fatalf("actions tab should expose USB tablet repair:\n%s", view)
 	}
-	if !strings.Contains(m.helpText(), "t: tablet") {
+	if !strings.Contains(m.helpText(), "enter: run") || strings.Contains(m.helpText(), "t: tablet") {
 		t.Fatalf("actions help should advertise tablet repair: %q", m.helpText())
 	}
-	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m.vmActionCursor = vmActionRepairTablet
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("tablet repair should start a command")
 	}
 	next := updated.(Model)
 	if next.mode != modeBusy || next.priorMode != modeVMDetail || !strings.Contains(next.status, "Repairing USB tablet input") {
 		t.Fatalf("tablet repair did not enter busy mode: %#v", next)
+	}
+}
+
+func TestVMActionsUseArrowSelection(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmTab:      vmTabActions,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "shut off"},
+		},
+	}
+	view := stripANSI(m.viewVMActions(80, 24))
+	if !strings.Contains(view, "> Start VM") {
+		t.Fatalf("first action should be selected by default:\n%s", view)
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd != nil {
+		t.Fatal("moving the action selection should not start a command")
+	}
+	next := updated.(Model)
+	if next.vmActionCursor != vmActionForceOff {
+		t.Fatalf("down should select force off, got cursor %d", next.vmActionCursor)
+	}
+	updated, cmd = next.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd != nil {
+		t.Fatal("moving the action selection should not start a command")
+	}
+	next = updated.(Model)
+	if next.vmActionCursor != vmActionPower {
+		t.Fatalf("up should return to power action, got cursor %d", next.vmActionCursor)
+	}
+	updated, cmd = next.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if cmd != nil {
+		t.Fatal("letter keys should not run Actions-tab actions")
+	}
+	next = updated.(Model)
+	if next.mode != modeVMDetail {
+		t.Fatalf("letter key should leave actions tab in detail mode, got %#v", next.mode)
 	}
 }
 

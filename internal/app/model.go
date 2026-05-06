@@ -116,6 +116,19 @@ const (
 )
 
 const (
+	vmActionPower = iota
+	vmActionForceOff
+	vmActionOpenConsole
+	vmActionStopConsole
+	vmActionRepairTablet
+	vmActionAdopt
+	vmActionToggleShared
+	vmActionRename
+	vmActionDuplicate
+	vmActionRefresh
+)
+
+const (
 	createVMFieldName = iota
 	createVMFieldMemory
 	createVMFieldCPUs
@@ -162,6 +175,7 @@ type Model struct {
 	mapCursor         int
 	diskCursor        int
 	nicCursor         int
+	vmActionCursor    int
 	isoCursor         int
 	themeCursor       int
 	vms               []VM
@@ -211,6 +225,12 @@ type Model struct {
 
 	duplicateVMName string
 	renameVMName    string
+}
+
+type vmAction struct {
+	id    int
+	group string
+	label string
 }
 
 type resultMsg struct {
@@ -1060,6 +1080,128 @@ func (m Model) isoStartDir() string {
 	return path
 }
 
+func (m Model) vmActions() []vmAction {
+	powerLabel := "Start VM"
+	if isRunningState(m.vmDetail.VM.State) {
+		powerLabel = "Request graceful shutdown"
+	}
+	shareLabel := "Share VM"
+	if m.vmDetail.VM.Shared {
+		shareLabel = "Make VM private"
+	}
+	return []vmAction{
+		{id: vmActionPower, group: "Power", label: powerLabel},
+		{id: vmActionForceOff, group: "Power", label: "Force off"},
+		{id: vmActionOpenConsole, group: "Console", label: "Open browser console"},
+		{id: vmActionStopConsole, group: "Console", label: "Stop console tunnel"},
+		{id: vmActionRepairTablet, group: "Repair", label: "Add USB tablet input"},
+		{id: vmActionAdopt, group: "Ownership", label: "Adopt unmanaged VM"},
+		{id: vmActionToggleShared, group: "Ownership", label: shareLabel},
+		{id: vmActionRename, group: "Rename", label: "Rename VM"},
+		{id: vmActionDuplicate, group: "Duplicate", label: "Duplicate to new VM name"},
+		{id: vmActionRefresh, group: "Refresh", label: "Reload detail"},
+	}
+}
+
+func (m Model) selectedVMAction() (vmAction, bool) {
+	actions := m.vmActions()
+	if len(actions) == 0 {
+		return vmAction{}, false
+	}
+	idx := m.vmActionCursor
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(actions) {
+		idx = len(actions) - 1
+	}
+	return actions[idx], true
+}
+
+func (m Model) moveVMActionCursor(delta int) Model {
+	actions := m.vmActions()
+	if len(actions) == 0 {
+		m.vmActionCursor = 0
+		return m
+	}
+	m.vmActionCursor += delta
+	if m.vmActionCursor < 0 {
+		m.vmActionCursor = 0
+	}
+	if m.vmActionCursor >= len(actions) {
+		m.vmActionCursor = len(actions) - 1
+	}
+	return m
+}
+
+func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
+	switch actionID {
+	case vmActionPower:
+		vm := m.vmDetail.VM
+		action := "start"
+		if isRunningState(vm.State) {
+			action = "shutdown"
+			m.markShutdownRequested(vm)
+		}
+		return m.busy(modeVMDetail, action+" "+vm.Name+"...", action, func() resultMsg {
+			out, err := lifecycle(m.activeHost, vm.Name, action)
+			return resultMsg{op: action, output: out, err: err}
+		})
+	case vmActionForceOff:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Force off "+vm.Name+"...", "destroy", func() resultMsg {
+			out, err := lifecycle(m.activeHost, vm.Name, "destroy")
+			return resultMsg{op: "destroy", output: out, err: err}
+		})
+	case vmActionOpenConsole:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Opening console for "+vm.Name+"...", "console", func() resultMsg {
+			out, err := openConsole(m.activeHost, vm.Name, m.stateDir)
+			return resultMsg{op: "console", output: out, err: err}
+		})
+	case vmActionStopConsole:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Stopping console for "+vm.Name+"...", "console-down", func() resultMsg {
+			out, err := closeConsole(m.activeHost, vm.Name, m.stateDir)
+			return resultMsg{op: "console-down", output: out, err: err}
+		})
+	case vmActionRepairTablet:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Repairing USB tablet input for "+vm.Name+"...", "tablet-repair", func() resultMsg {
+			out, err := repairUSBTablet(m.activeHost, vm.Name)
+			return resultMsg{op: "tablet-repair", output: out, err: err}
+		})
+	case vmActionAdopt:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Adopting "+vm.Name+"...", "adopt", func() resultMsg {
+			out, err := setOwnership(m.activeHost, vm, false, false)
+			return resultMsg{op: "adopt", output: out, err: err}
+		})
+	case vmActionToggleShared:
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, "Toggling shared flag for "+vm.Name+"...", "share", func() resultMsg {
+			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
+			return resultMsg{op: "share", output: out, err: err}
+		})
+	case vmActionRename:
+		m.mode = modeRenameVM
+		m.renameVMName = m.vmDetail.VM.Name
+		m.status = "Enter the new VM name."
+		m.errText = ""
+		return m, nil
+	case vmActionDuplicate:
+		m.mode = modeDuplicateVM
+		m.duplicateVMName = suggestedDuplicateName(m.vmDetail.VM.Name)
+		m.status = "Enter a new VM name for the duplicate."
+		m.errText = ""
+		return m, nil
+	case vmActionRefresh:
+		return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+	default:
+		return m, nil
+	}
+}
+
 func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "b", "esc":
@@ -1084,6 +1226,8 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.nicCursor > 0 {
 				m.nicCursor--
 			}
+		case vmTabActions:
+			m = m.moveVMActionCursor(-1)
 		}
 	case "down", "j":
 		switch m.vmTab {
@@ -1095,71 +1239,48 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.nicCursor < len(m.vmDetail.NICs)-1 {
 				m.nicCursor++
 			}
+		case vmTabActions:
+			m = m.moveVMActionCursor(1)
 		}
 	case "r":
-		return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
-	case "p":
-		vm := m.vmDetail.VM
-		action := "start"
-		if isRunningState(vm.State) {
-			action = "shutdown"
-			m.markShutdownRequested(vm)
+		if m.vmTab != vmTabActions {
+			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
 		}
-		return m.busy(modeVMDetail, action+" "+vm.Name+"...", action, func() resultMsg {
-			out, err := lifecycle(m.activeHost, vm.Name, action)
-			return resultMsg{op: action, output: out, err: err}
-		})
+	case "p":
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionPower)
+		}
 	case "f":
-		vm := m.vmDetail.VM
-		return m.busy(modeVMDetail, "Force off "+vm.Name+"...", "destroy", func() resultMsg {
-			out, err := lifecycle(m.activeHost, vm.Name, "destroy")
-			return resultMsg{op: "destroy", output: out, err: err}
-		})
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionForceOff)
+		}
 	case "o":
-		vm := m.vmDetail.VM
-		return m.busy(modeVMDetail, "Opening console for "+vm.Name+"...", "console", func() resultMsg {
-			out, err := openConsole(m.activeHost, vm.Name, m.stateDir)
-			return resultMsg{op: "console", output: out, err: err}
-		})
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionOpenConsole)
+		}
 	case "c":
-		vm := m.vmDetail.VM
-		return m.busy(modeVMDetail, "Stopping console for "+vm.Name+"...", "console-down", func() resultMsg {
-			out, err := closeConsole(m.activeHost, vm.Name, m.stateDir)
-			return resultMsg{op: "console-down", output: out, err: err}
-		})
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionStopConsole)
+		}
 	case "a":
-		vm := m.vmDetail.VM
-		return m.busy(modeVMDetail, "Adopting "+vm.Name+"...", "adopt", func() resultMsg {
-			out, err := setOwnership(m.activeHost, vm, false, false)
-			return resultMsg{op: "adopt", output: out, err: err}
-		})
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionAdopt)
+		}
 	case "h":
-		vm := m.vmDetail.VM
-		return m.busy(modeVMDetail, "Toggling shared flag for "+vm.Name+"...", "share", func() resultMsg {
-			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
-			return resultMsg{op: "share", output: out, err: err}
-		})
+		if m.vmTab != vmTabActions {
+			return m.runVMAction(vmActionToggleShared)
+		}
 	case "t":
-		if m.vmTab == vmTabActions {
-			vm := m.vmDetail.VM
-			return m.busy(modeVMDetail, "Repairing USB tablet input for "+vm.Name+"...", "tablet-repair", func() resultMsg {
-				out, err := repairUSBTablet(m.activeHost, vm.Name)
-				return resultMsg{op: "tablet-repair", output: out, err: err}
-			})
+		if m.vmTab != vmTabActions {
+			return m, nil
 		}
 	case "d":
-		if m.vmTab == vmTabActions {
-			m.mode = modeDuplicateVM
-			m.duplicateVMName = suggestedDuplicateName(m.vmDetail.VM.Name)
-			m.status = "Enter a new VM name for the duplicate."
-			m.errText = ""
+		if m.vmTab != vmTabActions {
+			return m, nil
 		}
 	case "e":
-		if m.vmTab == vmTabActions {
-			m.mode = modeRenameVM
-			m.renameVMName = m.vmDetail.VM.Name
-			m.status = "Enter the new VM name."
-			m.errText = ""
+		if m.vmTab != vmTabActions {
+			return m, nil
 		}
 	case "n":
 		switch m.vmTab {
@@ -1213,7 +1334,8 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "enter":
-		if m.vmTab == vmTabDisks {
+		switch m.vmTab {
+		case vmTabDisks:
 			disk, ok := m.selectedDisk()
 			if !ok || disk.Target == "" {
 				return m, nil
@@ -1223,6 +1345,12 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				out, err := setBootDisk(m.activeHost, vm.Name, disk)
 				return resultMsg{op: "disk-boot", output: out, err: err}
 			})
+		case vmTabActions:
+			action, ok := m.selectedVMAction()
+			if !ok {
+				return m, nil
+			}
+			return m.runVMAction(action.id)
 		}
 	}
 	return m, nil
@@ -2295,34 +2423,27 @@ func (m Model) viewVMNICs(width, height int) string {
 }
 
 func (m Model) viewVMActions(width, height int) string {
-	action := "start"
-	if strings.Contains(strings.ToLower(m.vmDetail.VM.State), "running") {
-		action = "shutdown"
-	}
-	lines := []string{
-		"Power",
-		"  p: " + action,
-		"  f: force off",
-		"",
-		"Console",
-		"  o: open browser console",
-		"  c: stop console tunnel",
-		"",
-		"Repair",
-		"  t: add USB tablet input",
-		"",
-		"Ownership",
-		"  a: adopt unmanaged VM",
-		"  h: toggle shared/private",
-		"",
-		"Rename",
-		"  e: rename VM",
-		"",
-		"Duplicate",
-		"  d: duplicate to new VM name",
-		"",
-		"Refresh",
-		"  r: reload detail",
+	actions := m.vmActions()
+	lines := make([]string, 0, len(actions)*2)
+	s := m.styles()
+	currentGroup := ""
+	for i, action := range actions {
+		if action.group != currentGroup {
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, action.group)
+			currentGroup = action.group
+		}
+		prefix := "  "
+		if i == m.vmActionCursor {
+			prefix = "> "
+		}
+		line := clipText(prefix+action.label, width)
+		if i == m.vmActionCursor {
+			line = s.selected.Render(line)
+		}
+		lines = append(lines, line)
 	}
 	return fitLines(strings.Join(lines, "\n"), width, height)
 }
@@ -2575,7 +2696,7 @@ func (m Model) helpText() string {
 			case vmTabNICs:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  n: add NIC  x: detach  r: refresh"
 			case vmTabActions:
-				return "?: help  m: themes  b/esc: host  left/right: tabs  p/f: power  o/c: console  t: tablet  e/d: rename/duplicate"
+				return "?: help  m: themes  b/esc: host  left/right: tabs  up/down: choose  enter: run"
 			default:
 				return "?: help  m: themes  b/esc: host  left/right: tabs  r: refresh  p/f: power  o: console"
 			}
@@ -2605,7 +2726,7 @@ func (m Model) helpText() string {
 			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
 		}
 	}
-	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions p/f/o/c/a/h/e/d. Mappings: n add VM service, e start/stop, d remove."
+	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions use up/down then enter. Mappings: n add VM service, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
