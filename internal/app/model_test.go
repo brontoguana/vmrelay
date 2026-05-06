@@ -488,6 +488,18 @@ func TestHostDetailRendersMappings(t *testing.T) {
 	}
 }
 
+func TestMappingStatusStyleUsesStateColors(t *testing.T) {
+	m := Model{config: Config{Theme: "Classic"}}
+	active := m.mappingStatusStyle("active")
+	if active.GetForeground() != m.currentTheme().OK {
+		t.Fatalf("active mapping status foreground = %q, want %q", active.GetForeground(), m.currentTheme().OK)
+	}
+	stopped := m.mappingStatusStyle("stopped")
+	if stopped.GetForeground() != m.currentTheme().Error {
+		t.Fatalf("stopped mapping status foreground = %q, want %q", stopped.GetForeground(), m.currentTheme().Error)
+	}
+}
+
 func TestParseVMDetailOutput(t *testing.T) {
 	out := strings.Join([]string{
 		"VMRELAY_DETAIL\tvm1\tuuid-1\trunning\talice\t1\tenable\t4\t8388608 KiB\tvnc://127.0.0.1:2",

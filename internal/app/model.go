@@ -2687,13 +2687,22 @@ func (m Model) viewMappings(width, height int) string {
 		}
 		vmEndpoint := m.mappingVMEndpointLabel(mapping)
 		local := fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort)
-		row := cursor + " " + cell(mapping.Name, nameW) + " " + cell(vmEndpoint, 24) + " " + cell(local, 18) + " " + cell(status, 8)
+		statusCell := m.mappingStatusStyle(status).Render(cell(status, 8))
+		row := cursor + " " + cell(mapping.Name, nameW) + " " + cell(vmEndpoint, 24) + " " + cell(local, 18) + " " + statusCell
 		if i == m.mapCursor {
 			row = s.selected.Render(row)
 		}
 		b.WriteString(row + "\n")
 	}
 	return fitLines(strings.TrimRight(b.String(), "\n"), width, height)
+}
+
+func (m Model) mappingStatusStyle(status string) lipgloss.Style {
+	s := m.styles()
+	if status == "active" {
+		return s.ok
+	}
+	return s.err
 }
 
 func (m Model) viewAddDisk(width, height int) string {

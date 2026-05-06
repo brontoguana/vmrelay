@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.39 - 2026-05-06
+
+- Colored VM service mapping status cells: active mappings use the theme OK green and stopped mappings use the theme error red.
+
 ## 0.2.38 - 2026-05-06
 
 - Changed VM start and graceful shutdown actions to run in the background without switching to the temporary busy screen.
