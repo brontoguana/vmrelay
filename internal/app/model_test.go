@@ -271,11 +271,11 @@ func TestPendingShutdownDisplaysTransitionState(t *testing.T) {
 	}
 }
 
-func TestVMRowStyleDimsOffVMs(t *testing.T) {
+func TestVMRowStyleMutesOffVMsWithoutFaint(t *testing.T) {
 	m := Model{config: Config{Theme: "Classic"}}
 	off := m.vmRowStyle(VM{State: "shut off"}, false)
-	if !off.GetFaint() {
-		t.Fatal("off VM row should be dimmed")
+	if off.GetFaint() {
+		t.Fatal("off VM row should use a brighter muted color instead of terminal faint")
 	}
 	running := m.vmRowStyle(VM{State: "running"}, false)
 	if running.GetFaint() {

@@ -2787,7 +2787,7 @@ func (m Model) vmRowStyle(vm VM, selected bool) lipgloss.Style {
 	case "shutdown":
 		style = style.Foreground(t.Accent)
 	case "off":
-		style = style.Foreground(t.Muted).Faint(true)
+		style = style.Foreground(t.Muted)
 	case "error":
 		style = style.Foreground(t.Error)
 	default:

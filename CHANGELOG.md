@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.37 - 2026-05-06
+
+- Brightened powered-off VM rows by removing the terminal faint attribute while keeping the muted state color.
+
 ## 0.2.36 - 2026-05-06
 
 - Changed the VM detail Actions tab from single-letter action shortcuts to a selectable action menu.
