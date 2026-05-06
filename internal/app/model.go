@@ -887,7 +887,7 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		if m.hostTab == hostTabVMs {
-			return m.loadVMs(m.activeHost)
+			return m.refreshVMsInBackground(m.activeHost)
 		}
 		if m.hostTab == hostTabConfig {
 			return m.busy(modeVMs, "Checking "+m.activeHost.Name+"...", "check", func() resultMsg {
@@ -1225,7 +1225,7 @@ func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
 		m.errText = ""
 		return m, nil
 	case vmActionRefresh:
-		return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+		return m.refreshVMDetailInBackground(m.activeHost, m.vmDetail.VM)
 	default:
 		return m, nil
 	}
@@ -1273,7 +1273,7 @@ func (m Model) updateVMDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		if m.vmTab != vmTabActions {
-			return m.loadVMDetail(m.activeHost, m.vmDetail.VM)
+			return m.refreshVMDetailInBackground(m.activeHost, m.vmDetail.VM)
 		}
 	case "p":
 		if m.vmTab != vmTabActions {
@@ -1670,6 +1670,45 @@ func backgroundVMDetailAutoCmd(h Host, vm VM) tea.Cmd {
 	}
 }
 
+func (m Model) refreshVMsInBackground(h Host) (tea.Model, tea.Cmd) {
+	if m.vmRefreshInFlight {
+		m.status = "Refresh already running."
+		return m, nil
+	}
+	m.activeHost = h
+	m.vmRefreshInFlight = true
+	m.status = "Refreshing " + h.Name + " VM list..."
+	m.errText = ""
+	return m, backgroundVMsRefreshCmd(h)
+}
+
+func backgroundVMsRefreshCmd(h Host) tea.Cmd {
+	return func() tea.Msg {
+		vms, out, err := listVMs(h)
+		return resultMsg{op: "vms-refresh", output: out, host: h, vms: vms, err: err}
+	}
+}
+
+func (m Model) refreshVMDetailInBackground(h Host, vm VM) (tea.Model, tea.Cmd) {
+	if m.vmRefreshInFlight {
+		m.status = "Refresh already running."
+		return m, nil
+	}
+	m.activeHost = h
+	m.vmDetail.VM = vm
+	m.vmRefreshInFlight = true
+	m.status = "Refreshing " + vm.Name + "..."
+	m.errText = ""
+	return m, backgroundVMDetailRefreshCmd(h, vm)
+}
+
+func backgroundVMDetailRefreshCmd(h Host, vm VM) tea.Cmd {
+	return func() tea.Msg {
+		detail, out, err := getVMDetail(h, vm)
+		return resultMsg{op: "vm-detail-refresh", output: out, host: h, detail: detail, err: err}
+	}
+}
+
 func (m Model) updateBackgroundLifecycleResult(msg resultMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.clearPendingTransition(msg.host, msg.vm, msg.op)
@@ -1729,6 +1768,53 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		if m.nicCursor >= len(m.vmDetail.NICs) {
 			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
 		}
+		return m, nil
+	}
+	if msg.op == "vms-refresh" {
+		m.vmRefreshInFlight = false
+		if m.mode != modeVMs || m.hostTab != hostTabVMs || m.activeHost.Name != msg.host.Name || m.activeHost.Target != msg.host.Target {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.errText = failureText(resultMsg{op: "vms", err: msg.err}, m)
+			if msg.output != "" {
+				m.errText += "\n" + strings.TrimSpace(msg.output)
+			}
+			m.status = "Refresh failed."
+			return m, nil
+		}
+		m.errText = ""
+		m.vms = msg.vms
+		m.reconcilePendingTransitions(m.vms)
+		if m.vmCursor >= len(m.vms) {
+			m.vmCursor = max(0, len(m.vms)-1)
+		}
+		m.status = fmt.Sprintf("Refreshed %d VMs from %s.", len(m.vms), msg.host.Name)
+		return m, nil
+	}
+	if msg.op == "vm-detail-refresh" {
+		m.vmRefreshInFlight = false
+		if m.mode != modeVMDetail || m.activeHost.Name != msg.host.Name || m.activeHost.Target != msg.host.Target {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.errText = failureText(resultMsg{op: "vm-detail", err: msg.err}, m)
+			if msg.output != "" {
+				m.errText += "\n" + strings.TrimSpace(msg.output)
+			}
+			m.status = "Refresh failed."
+			return m, nil
+		}
+		m.errText = ""
+		m.vmDetail = msg.detail
+		m.reconcilePendingTransitions([]VM{m.vmDetail.VM})
+		if m.diskCursor >= len(m.vmDetail.Disks) {
+			m.diskCursor = max(0, len(m.vmDetail.Disks)-1)
+		}
+		if m.nicCursor >= len(m.vmDetail.NICs) {
+			m.nicCursor = max(0, len(m.vmDetail.NICs)-1)
+		}
+		m.status = "Refreshed " + m.vmDetail.VM.Name + "."
 		return m, nil
 	}
 	if msg.op == "vms-background" {

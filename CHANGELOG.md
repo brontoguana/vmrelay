@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.40 - 2026-05-06
+
+- Changed manual VM list/detail refresh to run in the background and update the visible table/detail in place instead of switching to the temporary refreshing screen.
+
 ## 0.2.39 - 2026-05-06
 
 - Colored VM service mapping status cells: active mappings use the theme OK green and stopped mappings use the theme error red.

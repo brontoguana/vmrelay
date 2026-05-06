@@ -257,6 +257,92 @@ func TestAutoVMDetailRefreshUpdatesDetailWithoutChangingStatus(t *testing.T) {
 	}
 }
 
+func TestManualVMListRefreshStaysOnTable(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	m := Model{
+		mode:       modeVMs,
+		hostTab:    hostTabVMs,
+		activeHost: host,
+		vms:        []VM{{Name: "old", State: "running"}},
+	}
+	updated, cmd := m.updateVMKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("manual VM refresh should start a background command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMs {
+		t.Fatalf("manual VM refresh should keep VM list visible, got mode %v", next.mode)
+	}
+	if !next.vmRefreshInFlight {
+		t.Fatal("manual VM refresh should mark refresh in flight")
+	}
+
+	updated, cmd = next.updateResult(resultMsg{
+		op:   "vms-refresh",
+		host: host,
+		vms:  []VM{{Name: "new", State: "shut off"}},
+	})
+	if cmd != nil {
+		t.Fatal("manual VM refresh result should not trigger another command")
+	}
+	next = updated.(Model)
+	if next.vmRefreshInFlight {
+		t.Fatal("manual VM refresh result should clear in-flight state")
+	}
+	if next.mode != modeVMs {
+		t.Fatalf("manual VM refresh result should keep VM list visible, got mode %v", next.mode)
+	}
+	if len(next.vms) != 1 || next.vms[0].Name != "new" {
+		t.Fatalf("manual VM refresh did not update table rows: %#v", next.vms)
+	}
+	if !strings.Contains(next.status, "Refreshed 1 VMs") {
+		t.Fatalf("manual VM refresh should report completion in place, got %q", next.status)
+	}
+}
+
+func TestManualVMDetailRefreshStaysOnDetail(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	vm := VM{Name: "vm1", State: "running"}
+	m := Model{
+		mode:       modeVMDetail,
+		activeHost: host,
+		vmDetail:   VMDetail{VM: vm},
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("manual VM detail refresh should start a background command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMDetail {
+		t.Fatalf("manual VM detail refresh should keep detail visible, got mode %v", next.mode)
+	}
+	if !next.vmRefreshInFlight {
+		t.Fatal("manual VM detail refresh should mark refresh in flight")
+	}
+
+	updated, cmd = next.updateResult(resultMsg{
+		op:     "vm-detail-refresh",
+		host:   host,
+		detail: VMDetail{VM: VM{Name: "vm1", State: "shut off"}},
+	})
+	if cmd != nil {
+		t.Fatal("manual VM detail refresh result should not trigger another command")
+	}
+	next = updated.(Model)
+	if next.vmRefreshInFlight {
+		t.Fatal("manual VM detail refresh result should clear in-flight state")
+	}
+	if next.mode != modeVMDetail {
+		t.Fatalf("manual VM detail refresh result should keep detail visible, got mode %v", next.mode)
+	}
+	if next.vmDetail.VM.State != "shut off" {
+		t.Fatalf("manual VM detail refresh did not update detail: %#v", next.vmDetail)
+	}
+	if !strings.Contains(next.status, "Refreshed vm1") {
+		t.Fatalf("manual VM detail refresh should report completion in place, got %q", next.status)
+	}
+}
+
 func TestVMRefreshCanPreserveActionStatus(t *testing.T) {
 	m := Model{
 		mode:       modeBusy,
