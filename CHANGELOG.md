@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.41 - 2026-05-11
+
+- Added host-level VirtualBox VM import from a remote `.vbox` file. VMRelay parses the VirtualBox name, RAM, CPU count, firmware mode, and attached hard disks; converts copied disks to qcow2 in the selected libvirt storage pool; defines a new system-libvirt VM with VMRelay NAT networking, VNC graphics, USB tablet input, and restart-on-reboot lifecycle; and records VMRelay ownership for the remote SSH user.
+- The import flow ignores VirtualBox networking by design and leaves the original VirtualBox VM/disk files untouched.
+
 ## 0.2.40 - 2026-05-06
 
 - Changed manual VM list/detail refresh to run in the background and update the visible table/detail in place instead of switching to the temporary refreshing screen.

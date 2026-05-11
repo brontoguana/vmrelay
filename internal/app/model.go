@@ -89,6 +89,7 @@ const (
 	modeVMDetail
 	modeAddMapping
 	modeCreateVM
+	modeImportVBox
 	modeISOPicker
 	modeAddDisk
 	modeImportDisk
@@ -139,6 +140,15 @@ const (
 	createVMFieldFirmware
 	createVMFieldShared
 	createVMFieldCount
+)
+
+const (
+	importVBoxFieldPath = iota
+	importVBoxFieldName
+	importVBoxFieldDiskBus
+	importVBoxFieldNetwork
+	importVBoxFieldShared
+	importVBoxFieldCount
 )
 
 const (
@@ -197,18 +207,24 @@ type Model struct {
 	addMapRemotePort string
 	addMapField      int
 
-	createVMName     string
-	createVMMemory   string
-	createVMCPUs     string
-	createVMDiskSize string
-	createVMDiskBus  string
-	createVMISO      string
-	createVMNetwork  string
-	createVMFirmware string
-	createVMShared   string
-	createVMField    int
-	isoDir           string
-	isoEntries       []remoteEntry
+	createVMName      string
+	createVMMemory    string
+	createVMCPUs      string
+	createVMDiskSize  string
+	createVMDiskBus   string
+	createVMISO       string
+	createVMNetwork   string
+	createVMFirmware  string
+	createVMShared    string
+	createVMField     int
+	importVBoxPath    string
+	importVBoxName    string
+	importVBoxDiskBus string
+	importVBoxNetwork string
+	importVBoxShared  string
+	importVBoxField   int
+	isoDir            string
+	isoEntries        []remoteEntry
 
 	addDiskPath   string
 	addDiskSize   string
@@ -457,6 +473,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewAddMapping(innerW, contentH))
 	case modeCreateVM:
 		b.WriteString(m.viewCreateVM(innerW, contentH))
+	case modeImportVBox:
+		b.WriteString(m.viewImportVBox(innerW, contentH))
 	case modeISOPicker:
 		b.WriteString(m.viewISOPicker(innerW, contentH))
 	case modeAddDisk:
@@ -491,14 +509,14 @@ func (m Model) View() string {
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeAddMapping) {
+	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeAddMapping && m.mode != modeImportVBox) {
 		return m, tea.Quit
 	}
 	if msg.String() == "?" {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -518,6 +536,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddMappingKey(msg)
 	case modeCreateVM:
 		return m.updateCreateVMKey(msg)
+	case modeImportVBox:
+		return m.updateImportVBoxKey(msg)
 	case modeISOPicker:
 		return m.updateISOPickerKey(msg)
 	case modeAddDisk:
@@ -801,6 +821,73 @@ func (m Model) updateCreateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateImportVBoxKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMs
+		m.status = "Cancelled VirtualBox import."
+		m.errText = ""
+	case "up", "k":
+		if m.importVBoxField > 0 {
+			m.importVBoxField--
+		}
+	case "down", "j":
+		if m.importVBoxField < importVBoxFieldCount-1 {
+			m.importVBoxField++
+		}
+	case "tab":
+		m.importVBoxField = (m.importVBoxField + 1) % importVBoxFieldCount
+	case "shift+tab":
+		m.importVBoxField = (m.importVBoxField + importVBoxFieldCount - 1) % importVBoxFieldCount
+	case "left":
+		m.cycleImportVBoxField(-1)
+	case "right":
+		m.cycleImportVBoxField(1)
+	case "enter":
+		if m.importVBoxField < importVBoxFieldCount-1 {
+			m.importVBoxField++
+			return m, nil
+		}
+		req, err := m.pendingVBoxImport()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		label := req.Name
+		if label == "" {
+			label = filepath.Base(req.VBoxPath)
+		}
+		return m.busy(modeVMs, "Importing VirtualBox VM "+label+" on "+m.activeHost.Name+"...", "vbox-import", func() resultMsg {
+			out, err := importVirtualBoxVM(m.activeHost, req)
+			return resultMsg{op: "vbox-import", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		if !importVBoxFieldEditable(m.importVBoxField) {
+			return m, nil
+		}
+		switch m.importVBoxField {
+		case importVBoxFieldPath:
+			m.importVBoxPath = trimLastRune(m.importVBoxPath)
+		case importVBoxFieldName:
+			m.importVBoxName = trimLastRune(m.importVBoxName)
+		case importVBoxFieldNetwork:
+			m.importVBoxNetwork = trimLastRune(m.importVBoxNetwork)
+		}
+	default:
+		if msg.Type == tea.KeyRunes && importVBoxFieldEditable(m.importVBoxField) {
+			switch m.importVBoxField {
+			case importVBoxFieldPath:
+				m.importVBoxPath += msg.String()
+			case importVBoxFieldName:
+				m.importVBoxName = appendLimitedRunes(m.importVBoxName, msg.String(), maxVMNameRunes)
+			case importVBoxFieldNetwork:
+				m.importVBoxNetwork += msg.String()
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateISOPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -884,6 +971,10 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addMapField = 0
 			m.status = "Add a VM-accessible service mapping."
 			m.errText = ""
+		}
+	case "i":
+		if m.hostTab == hostTabVMs || m.hostTab == hostTabConfig {
+			m = m.beginImportVBox()
 		}
 	case "r":
 		if m.hostTab == hostTabVMs {
@@ -1016,6 +1107,19 @@ func (m Model) beginCreateVM() Model {
 	return m
 }
 
+func (m Model) beginImportVBox() Model {
+	m.mode = modeImportVBox
+	m.importVBoxPath = "~/Documents/"
+	m.importVBoxName = ""
+	m.importVBoxDiskBus = "sata"
+	m.importVBoxNetwork = "default"
+	m.importVBoxShared = "no"
+	m.importVBoxField = 0
+	m.status = "Import a VirtualBox VM from a remote .vbox file."
+	m.errText = ""
+	return m
+}
+
 var (
 	createVMMemoryChoices   = []string{"1", "2", "4", "8", "16", "32", "64", "128"}
 	createVMCPUChoices      = []string{"1", "2", "4", "6", "8", "12", "16", "24", "32"}
@@ -1029,6 +1133,15 @@ var (
 func createVMFieldEditable(field int) bool {
 	switch field {
 	case createVMFieldName, createVMFieldMemory, createVMFieldCPUs, createVMFieldDiskSize, createVMFieldISO, createVMFieldNetwork:
+		return true
+	default:
+		return false
+	}
+}
+
+func importVBoxFieldEditable(field int) bool {
+	switch field {
+	case importVBoxFieldPath, importVBoxFieldName, importVBoxFieldNetwork:
 		return true
 	default:
 		return false
@@ -1051,6 +1164,17 @@ func (m *Model) cycleCreateVMField(delta int) {
 		m.createVMFirmware = cycleChoice(m.createVMFirmware, createVMFirmwareChoices, delta)
 	case createVMFieldShared:
 		m.createVMShared = cycleChoice(m.createVMShared, createVMSharedChoices, delta)
+	}
+}
+
+func (m *Model) cycleImportVBoxField(delta int) {
+	switch m.importVBoxField {
+	case importVBoxFieldDiskBus:
+		m.importVBoxDiskBus = cycleChoice(m.importVBoxDiskBus, createVMDiskBusChoices, delta)
+	case importVBoxFieldNetwork:
+		m.importVBoxNetwork = cycleChoice(m.importVBoxNetwork, createVMNetworkChoices, delta)
+	case importVBoxFieldShared:
+		m.importVBoxShared = cycleChoice(m.importVBoxShared, createVMSharedChoices, delta)
 	}
 }
 
@@ -1921,6 +2045,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 		m.hostTab = hostTabVMs
 		return m.loadVMs(m.activeHost)
+	case "vbox-import":
+		m.status = strings.TrimSpace(msg.output)
+		if m.status == "" {
+			m.status = "VirtualBox VM imported."
+		}
+		m.hostTab = hostTabVMs
+		return m.loadVMs(m.activeHost)
 	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach", "tablet-repair":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -1966,6 +2097,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Mapping stop failed: " + msg.err.Error()
 	case "vm-create":
 		return "VM creation failed: " + msg.err.Error()
+	case "vbox-import":
+		return "VirtualBox import failed: " + msg.err.Error()
 	case "vm-duplicate":
 		return "VM duplicate failed: " + msg.err.Error()
 	case "vm-rename":
@@ -2206,6 +2339,44 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 	}, nil
 }
 
+func (m Model) pendingVBoxImport() (vboxImportRequest, error) {
+	vboxPath := strings.TrimSpace(m.importVBoxPath)
+	if err := validateRequiredRemotePath(vboxPath, ".vbox path"); err != nil {
+		return vboxImportRequest{}, err
+	}
+	if strings.HasSuffix(vboxPath, "/") || !strings.EqualFold(filepath.Ext(vboxPath), ".vbox") {
+		return vboxImportRequest{}, fmt.Errorf(".vbox path must point to a .vbox file")
+	}
+	name := strings.TrimSpace(m.importVBoxName)
+	if name != "" {
+		if err := validateVMName(name, "new VM name"); err != nil {
+			return vboxImportRequest{}, err
+		}
+	}
+	diskBus := strings.ToLower(strings.TrimSpace(m.importVBoxDiskBus))
+	if diskBus == "" {
+		diskBus = "sata"
+	}
+	switch diskBus {
+	case "sata", "virtio", "scsi", "ide":
+	default:
+		return vboxImportRequest{}, fmt.Errorf("disk bus must be sata, virtio, scsi, or ide")
+	}
+	network := strings.TrimSpace(m.importVBoxNetwork)
+	if network == "" {
+		network = "default"
+	}
+	if strings.ContainsAny(network, "\r\n\t ") {
+		return vboxImportRequest{}, fmt.Errorf("network must not contain spaces")
+	}
+	sharedText := strings.ToLower(strings.TrimSpace(m.importVBoxShared))
+	shared := sharedText == "y" || sharedText == "yes" || sharedText == "true" || sharedText == "1" || sharedText == "shared"
+	if sharedText != "" && !shared && sharedText != "n" && sharedText != "no" && sharedText != "false" && sharedText != "0" && sharedText != "private" {
+		return vboxImportRequest{}, fmt.Errorf("shared must be y/n")
+	}
+	return vboxImportRequest{VBoxPath: vboxPath, Name: name, DiskBus: diskBus, Network: network, Shared: shared}, nil
+}
+
 func (m Model) pendingDuplicateVMName() (string, error) {
 	name := strings.TrimSpace(m.duplicateVMName)
 	if err := validateVMName(name, "new VM name"); err != nil {
@@ -2254,6 +2425,14 @@ type vmCreateRequest struct {
 	Network   string
 	Firmware  string
 	Shared    bool
+}
+
+type vboxImportRequest struct {
+	VBoxPath string
+	Name     string
+	DiskBus  string
+	Network  string
+	Shared   bool
 }
 
 type diskImportRequest struct {
@@ -2533,7 +2712,7 @@ func (m Model) viewVMs(width, height int) string {
 	bodyW := max(50, width)
 	nameW := max(24, bodyW-44)
 	if len(m.vms) == 0 {
-		b.WriteString("No VMs found under qemu:///system.\n\nPress n to create a VM from a remote ISO.")
+		b.WriteString("No VMs found under qemu:///system.\n\nPress n to create a VM from a remote ISO or i to import a VirtualBox .vbox VM.")
 		return b.String()
 	}
 	b.WriteString("  " + cell("VM", nameW) + " " + cell("State", 12) + " " + cell("Owner", 14) + " " + cell("Visibility", 10) + "\n")
@@ -2668,6 +2847,7 @@ func (m Model) viewHostConfig(width, height int) string {
 		"  Setup:      press s to install/check required packages",
 		"  Check:      press r to run a host readiness check",
 		"  Create VM:  press n to create a VM from a remote ISO",
+		"  Import VM:  press i to import a VirtualBox .vbox VM",
 		"",
 		"Local State",
 		"  Config:   " + m.configPath,
@@ -2702,6 +2882,36 @@ func (m Model) viewCreateVM(width, height int) string {
 		fmt.Sprintf("Names may use letters, numbers, dot, dash, or underscore, up to %d characters.", maxVMNameRunes),
 		"Disk bus: sata is safest for Windows installers; virtio/scsi are better for prepared Linux or driver-ready Windows guests.",
 		"VMRelay creates the boot disk in a libvirt storage pool, starts a VNC install VM, and records ownership for the remote SSH user.",
+	}
+	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.Join(lines, "\n"), contentW, height-4))
+}
+
+func (m Model) viewImportVBox(width, height int) string {
+	cursors := make([]string, importVBoxFieldCount)
+	for i := range cursors {
+		cursors[i] = " "
+	}
+	cursors[m.importVBoxField] = ">"
+	contentW := max(20, width-6)
+	valueW := max(8, contentW-14)
+	displayName := m.importVBoxName
+	if strings.TrimSpace(displayName) == "" {
+		displayName = "(from .vbox)"
+	}
+	lines := []string{
+		"Import VirtualBox VM on " + m.activeHost.Name,
+		"",
+		createVMFormRow(cursors[importVBoxFieldPath], "VBox path", m.importVBoxPath, valueW, m.importVBoxField == importVBoxFieldPath),
+		createVMFormRow(cursors[importVBoxFieldName], "New name", displayName, valueW, m.importVBoxField == importVBoxFieldName),
+		createVMFormRow(cursors[importVBoxFieldDiskBus], "Disk bus", m.importVBoxDiskBus, valueW, m.importVBoxField == importVBoxFieldDiskBus),
+		createVMFormRow(cursors[importVBoxFieldNetwork], "Network", m.importVBoxNetwork, valueW, m.importVBoxField == importVBoxFieldNetwork),
+		createVMFormRow(cursors[importVBoxFieldShared], "Shared", sharedChoiceLabel(m.importVBoxShared), valueW, m.importVBoxField == importVBoxFieldShared),
+		"",
+		"VMRelay reads RAM, CPU count, EFI/BIOS mode, and attached hard disks from the .vbox file.",
+		"VirtualBox networking is ignored; the imported VM uses VMRelay NAT, VNC graphics, and USB tablet input.",
+		"Disks are copied and converted to qcow2 in the selected libvirt storage pool; the original VirtualBox VM is left untouched.",
+		"Disk bus: sata is safest for Windows imports unless virtio drivers are already installed.",
+		"Enter moves fields/imports. Left/right changes preset fields. Esc cancels.",
 	}
 	return m.styles().pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.Join(lines, "\n"), contentW, height-4))
 }
@@ -2900,11 +3110,11 @@ func (m Model) helpText() string {
 		case modeVMs:
 			switch m.hostTab {
 			case hostTabConfig:
-				return "?: help  m: themes  b: hosts  left/right: tabs  n: create VM  r: check  s: setup"
+				return "?: help  m: themes  b: hosts  left/right: tabs  n: create VM  i: import VBox  r: check  s: setup"
 			case hostTabMappings:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  s: setup"
 			default:
-				return "?: help  m: themes  b: hosts  enter: detail  n: create VM  r: refresh  p/f: power  o/x: console"
+				return "?: help  m: themes  b: hosts  enter: detail  n: create VM  i: import VBox  r: refresh  p/f: power"
 			}
 		case modeVMDetail:
 			switch m.vmTab {
@@ -2923,6 +3133,8 @@ func (m Model) helpText() string {
 			return "tab: switch field  enter: next/save  esc: cancel"
 		case modeCreateVM:
 			return "up/down: fields  left/right: presets  enter: next/browse/create  tab: next  esc: cancel"
+		case modeImportVBox:
+			return "up/down: fields  left/right: presets  enter: next/import  tab: next  esc: cancel"
 		case modeISOPicker:
 			return "up/down: browse  enter/right: open/select  left/backspace: parent  esc: form"
 		case modeAddDisk:
@@ -4182,6 +4394,377 @@ func createVMBootOption(firmware string) string {
 		return "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes,loader.secure=yes"
 	}
 	return "cdrom,hd"
+}
+
+func importVirtualBoxVM(h Host, req vboxImportRequest) (string, error) {
+	script := importVirtualBoxVMScript(req)
+	return ssh(h.Target, script, 4*time.Hour)
+}
+
+func importVirtualBoxVMScript(req vboxImportRequest) string {
+	sharedValue := "0"
+	if req.Shared {
+		sharedValue = "1"
+	}
+	return fmt.Sprintf(`
+set -euo pipefail
+vbox=%s
+name_override=%s
+disk_bus=%s
+network=%s
+shared=%s
+
+case "$vbox" in
+  "~") vbox="$HOME" ;;
+  "~/"*) vbox="$HOME/${vbox#\~/}" ;;
+  /*) ;;
+  *) echo ".vbox path must be absolute or start with ~/: $vbox" >&2; exit 1 ;;
+esac
+
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to parse VirtualBox .vbox files." >&2; exit 1; }
+command -v qemu-img >/dev/null 2>&1 || { echo "qemu-img is missing; run setup for this host." >&2; exit 1; }
+command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
+[ -e "$vbox" ] || { echo ".vbox file does not exist: $vbox" >&2; exit 1; }
+[ -r "$vbox" ] || { echo ".vbox file is not readable by $(whoami): $vbox" >&2; exit 1; }
+
+plan="$(python3 - "$vbox" "$name_override" <<'PY'
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+vbox_path = sys.argv[1]
+name_override = sys.argv[2].strip()
+
+def local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+def elements(parent, name):
+    return [el for el in parent.iter() if local(el.tag) == name]
+
+def first(parent, name):
+    for el in parent.iter():
+        if local(el.tag) == name:
+            return el
+    return None
+
+def clean(value):
+    value = "" if value is None else str(value)
+    if "\t" in value or "\n" in value or "\r" in value:
+        raise SystemExit("VirtualBox metadata contains unsupported control whitespace.")
+    return value
+
+root = ET.parse(vbox_path).getroot()
+machine = root if local(root.tag) == "Machine" else first(root, "Machine")
+if machine is None:
+    raise SystemExit("Could not find a Machine element in the .vbox file.")
+
+vm_name = name_override or machine.get("name") or os.path.splitext(os.path.basename(vbox_path))[0]
+memory_el = first(machine, "Memory")
+cpu_el = first(machine, "CPU")
+memory = int(memory_el.get("RAMSize", "4096")) if memory_el is not None else 4096
+cpus = int(cpu_el.get("count", "2")) if cpu_el is not None else 2
+
+firmware = "bios"
+for el in elements(machine, "Firmware"):
+    attrs = " ".join(str(v) for v in el.attrib.values()).lower()
+    if "efi" in attrs:
+        firmware = "uefi"
+        break
+for key, value in machine.attrib.items():
+    if "firmware" in key.lower() and "efi" in value.lower():
+        firmware = "uefi"
+
+media = {}
+for disk in elements(machine, "HardDisk"):
+    uuid = disk.get("uuid")
+    location = disk.get("location")
+    if uuid and location:
+        media[uuid.strip("{}").lower()] = location
+
+attached = []
+for index, dev in enumerate(elements(machine, "AttachedDevice")):
+    if dev.get("type") != "HardDisk":
+        continue
+    image = first(dev, "Image")
+    uuid = image.get("uuid") if image is not None else ""
+    location = media.get(uuid.strip("{}").lower())
+    if location:
+        try:
+            port = int(dev.get("port", "0"))
+        except ValueError:
+            port = 0
+        try:
+            device = int(dev.get("device", "0"))
+        except ValueError:
+            device = 0
+        attached.append((port, device, index, location))
+
+if attached:
+    disk_locations = [item[3] for item in sorted(attached)]
+else:
+    disk_locations = list(media.values())
+
+if not disk_locations:
+    raise SystemExit("No attached VirtualBox hard disks were found in the .vbox file.")
+
+base_dir = os.path.dirname(os.path.abspath(vbox_path))
+resolved = []
+for location in disk_locations:
+    location = os.path.expanduser(location)
+    if not os.path.isabs(location):
+        location = os.path.abspath(os.path.join(base_dir, location))
+    if location not in resolved:
+        resolved.append(location)
+
+print("\t".join(["VMRELAY_VBOX_VM", clean(vm_name), str(memory), str(cpus), firmware]))
+for disk in resolved:
+    print("\t".join(["VMRELAY_VBOX_DISK", clean(disk)]))
+PY
+)"
+
+vm_name=""
+memory_mib=""
+cpus=""
+firmware=""
+disk_sources=()
+while IFS=$'\t' read -r tag a b c d; do
+  case "$tag" in
+    VMRELAY_VBOX_VM)
+      vm_name="$a"
+      memory_mib="$b"
+      cpus="$c"
+      firmware="$d"
+      ;;
+    VMRELAY_VBOX_DISK)
+      disk_sources+=("$a")
+      ;;
+  esac
+done <<< "$plan"
+
+valid_vm_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]] && [ "${#1}" -le 80 ]
+}
+
+[ -n "$vm_name" ] || { echo "VirtualBox VM name is empty; provide a new VM name." >&2; exit 1; }
+valid_vm_name "$vm_name" || { echo "VirtualBox VM name is not a valid VMRelay/libvirt name: ${vm_name}. Provide a new VM name using letters, numbers, dot, dash, or underscore." >&2; exit 1; }
+[[ "$memory_mib" =~ ^[0-9]+$ ]] && [ "$memory_mib" -ge 128 ] && [ "$memory_mib" -le 1048576 ] || { echo "Invalid RAM size parsed from .vbox: ${memory_mib} MiB" >&2; exit 1; }
+[[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -ge 1 ] && [ "$cpus" -le 256 ] || { echo "Invalid CPU count parsed from .vbox: ${cpus}" >&2; exit 1; }
+case "$firmware" in bios|uefi) ;; *) echo "Invalid firmware parsed from .vbox: ${firmware}" >&2; exit 1 ;; esac
+case "$disk_bus" in sata|virtio|scsi|ide) ;; *) echo "Unsupported disk bus: ${disk_bus}" >&2; exit 1 ;; esac
+[ "${#disk_sources[@]}" -gt 0 ] || { echo "No hard disks were parsed from ${vbox}." >&2; exit 1; }
+
+virsh -c qemu:///system dominfo "$vm_name" >/dev/null 2>&1 && { echo "VM already exists: $vm_name" >&2; exit 1; }
+virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
+net_active="$(virsh -c qemu:///system net-info "$network" 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+if [ "$net_active" != "yes" ]; then
+  if ! virsh -c qemu:///system net-start "$network" >/dev/null 2>&1; then
+    echo "Libvirt network is not active: ${network}. Run host setup so VMRelay can start the NAT network." >&2
+    exit 1
+  fi
+fi
+if [ "$firmware" = "uefi" ] && [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovmf ] && [ ! -e /usr/share/qemu/OVMF.fd ]; then
+  echo "UEFI firmware is missing; run setup or install ovmf on the host." >&2
+  exit 1
+fi
+
+pool_target() {
+  virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1
+}
+
+pool_running() {
+  virsh -c qemu:///system pool-info "$1" 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' | grep -qx running
+}
+
+select_pool() {
+  for candidate in vmrelay images default; do
+    if pool_running "$candidate"; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    target="$(pool_target "$candidate")"
+    if [ "$target" = "/var/lib/libvirt/images" ]; then
+      printf '%%s\n' "$candidate"
+      return 0
+    fi
+  done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
+  first="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
+  [ -n "$first" ] || { echo "No running libvirt storage pool found for VirtualBox import. Run host setup so VMRelay can initialize /var/lib/vmrelay/images." >&2; return 1; }
+  printf '%%s\n' "$first"
+}
+
+storage_pool="$(select_pool)"
+storage_target="$(pool_target "$storage_pool")"
+[ -n "$storage_target" ] || { echo "Could not determine target path for libvirt storage pool: $storage_pool" >&2; exit 1; }
+[ -d "$storage_target" ] || { echo "Storage pool target does not exist: $storage_target" >&2; exit 1; }
+
+base_safe="$(printf '%%s' "$vm_name" | tr -c 'A-Za-z0-9_.-' '_' | cut -c 1-64)"
+name_hash="$(printf '%%s' "$vm_name" | cksum | awk '{ print $1 }')"
+safe="${base_safe}-${name_hash}"
+converted_disks=()
+vm_defined=0
+xml=""
+cleanup_import() {
+  if [ "${vm_defined}" != "1" ]; then
+    for disk in "${converted_disks[@]}"; do
+      if [ -n "$disk" ] && [ -e "$disk" ]; then
+        rm -f "$disk" 2>/dev/null || sudo -n rm -f "$disk" 2>/dev/null || true
+      fi
+    done
+  fi
+  [ -z "$xml" ] || rm -f "$xml"
+}
+trap cleanup_import EXIT
+
+can_sudo=0
+if sudo -n true 2>/dev/null; then
+  can_sudo=1
+fi
+
+disk_args=()
+index=0
+for source in "${disk_sources[@]}"; do
+  index=$((index + 1))
+  [ -e "$source" ] || { echo "VirtualBox disk does not exist: $source" >&2; exit 1; }
+  [ -r "$source" ] || { echo "VirtualBox disk is not readable by $(whoami): $source" >&2; exit 1; }
+  format="$(qemu-img info "$source" 2>/dev/null | awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+  [ -n "$format" ] || { echo "Could not detect source disk format with qemu-img: $source" >&2; exit 1; }
+  disk_vol="${safe}-disk${index}.qcow2"
+  if virsh -c qemu:///system vol-info --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1; then
+    echo "Disk volume already exists in pool ${storage_pool}: ${disk_vol}" >&2
+    exit 1
+  fi
+  dest="${storage_target}/${disk_vol}"
+  if [ -e "$dest" ]; then
+    echo "Destination already exists: $dest" >&2
+    exit 1
+  fi
+  if [ -w "$storage_target" ]; then
+    qemu-img convert -p -f "$format" -O qcow2 "$source" "$dest"
+    chmod 0660 "$dest" 2>/dev/null || true
+  elif [ "$can_sudo" = "1" ]; then
+    sudo -n qemu-img convert -p -f "$format" -O qcow2 "$source" "$dest"
+    sudo -n chown libvirt-qemu:kvm "$dest" 2>/dev/null || sudo -n chown qemu:qemu "$dest" 2>/dev/null || true
+    sudo -n chmod 0660 "$dest" 2>/dev/null || true
+  else
+    echo "Cannot write converted disks to ${storage_target}. Run host setup or use an account with write access/passwordless sudo." >&2
+    exit 1
+  fi
+  converted_disks+=("$dest")
+  disk_args+=(--disk "path=${dest},format=qcow2,bus=${disk_bus},cache=none")
+done
+
+xml="$(mktemp)"
+boot_option="hd"
+if [ "$firmware" = "uefi" ]; then
+  boot_option="uefi"
+fi
+args=(
+  --connect qemu:///system
+  --name "$vm_name"
+  --memory "$memory_mib"
+  --vcpus "$cpus"
+  --import
+  --network "network=${network},model=e1000e"
+  --graphics vnc,listen=127.0.0.1
+  --input type=tablet,bus=usb
+  --video virtio
+  --os-variant detect=on,require=off
+  --boot "$boot_option"
+  --noautoconsole
+)
+args+=("${disk_args[@]}")
+if [ "$firmware" = "uefi" ]; then
+  args+=(--machine q35)
+fi
+virt-install "${args[@]}" --print-xml >"$xml"
+
+python3 - "$xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+tree = ET.parse(path)
+root = tree.getroot()
+os_el = root.find("os")
+if os_el is not None:
+    for boot in list(os_el.findall("boot")):
+        os_el.remove(boot)
+
+devices = root.find("devices")
+first_disk = None
+if devices is not None:
+    for disk in devices.findall("disk"):
+        for boot in list(disk.findall("boot")):
+            disk.remove(boot)
+        if disk.get("device") == "disk" and first_disk is None:
+            first_disk = disk
+    if first_disk is not None:
+        ET.SubElement(first_disk, "boot", {"order": "1"})
+    for iface in devices.findall("interface"):
+        source = iface.find("source")
+        if source is None or source.get("network") is None:
+            continue
+        model = iface.find("model")
+        if model is None:
+            model = ET.SubElement(iface, "model")
+        model.set("type", "e1000e")
+
+def set_lifecycle(tag, value):
+    el = root.find(tag)
+    if el is None:
+        el = ET.Element(tag)
+        os_el = root.find("os")
+        if os_el is not None:
+            index = list(root).index(os_el) + 1
+            root.insert(index, el)
+        else:
+            root.insert(0, el)
+    el.text = value
+
+set_lifecycle("on_poweroff", "destroy")
+set_lifecycle("on_reboot", "restart")
+set_lifecycle("on_crash", "destroy")
+tree.write(path, encoding="unicode")
+PY
+
+virsh -c qemu:///system define "$xml" >/dev/null
+vm_defined=1
+
+uuid="$(virsh -c qemu:///system domuuid "$vm_name")"
+system_policy=/var/lib/vmrelay/ownership.tsv
+user_policy="${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+policy="$system_policy"
+use_sudo=0
+policy_note=""
+if [ -w "$policy" ] || { [ ! -e "$policy" ] && [ -w "$(dirname "$policy")" ]; }; then
+  :
+elif [ "$can_sudo" = "1" ]; then
+  use_sudo=1
+  sudo -n install -d -m 0775 "$(dirname "$policy")"
+else
+  policy="$user_policy"
+  mkdir -p "$(dirname "$policy")"
+  policy_note="Ownership recorded in the per-user VMRelay policy because ${system_policy} is not writable."
+fi
+tmp="$(mktemp)"
+if [ -r "$policy" ]; then awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp"; fi
+printf '%%s\t%%s\t%%s\t%%s\n' "$uuid" "$(whoami)" "$shared" '' >>"$tmp"
+if [ "$use_sudo" = "1" ]; then
+  sudo -n cp "$tmp" "$policy"
+  sudo -n chmod 0664 "$policy"
+else
+  cat "$tmp" >"$policy"
+  chmod 0664 "$policy" 2>/dev/null || true
+fi
+rm -f "$tmp"
+
+echo "Imported VirtualBox VM ${vm_name} with ${memory_mib} MiB RAM, ${cpus} CPU(s), ${firmware} firmware, and ${#converted_disks[@]} converted disk(s) in ${storage_pool}."
+echo "Networking was replaced with libvirt NAT network ${network}; VNC graphics and USB tablet input were added."
+[ -z "$policy_note" ] || echo "$policy_note"
+`, shellQuote(req.VBoxPath), shellQuote(req.Name), shellQuote(req.DiskBus), shellQuote(req.Network), shellQuote(sharedValue))
 }
 
 func createAndAttachDisk(h Host, vmName string, req diskCreateRequest) (string, error) {

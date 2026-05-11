@@ -3,6 +3,8 @@ package app
 import (
 	"net"
 	"net/url"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -968,6 +970,103 @@ func TestCreateVMFormAndValidation(t *testing.T) {
 	m.createVMFirmware = "coreboot"
 	if _, err := m.pendingVMCreate(); err == nil {
 		t.Fatal("expected unsupported firmware to fail")
+	}
+}
+
+func TestImportVBoxFormAndValidation(t *testing.T) {
+	m := Model{
+		config:            Config{Theme: "Classic"},
+		mode:              modeImportVBox,
+		activeHost:        Host{Name: "iron"},
+		importVBoxPath:    "~/Documents/Win10/Win10.vbox",
+		importVBoxName:    "Win10-Imported",
+		importVBoxDiskBus: "sata",
+		importVBoxNetwork: "default",
+		importVBoxShared:  "yes",
+	}
+	view := stripANSI(m.viewImportVBox(110, 22))
+	for _, want := range []string{"Import VirtualBox VM on iron", "Win10.vbox", "Disk bus", "VMRelay NAT", "converted to qcow2"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("VirtualBox import form missing %q:\n%s", want, view)
+		}
+	}
+	req, err := m.pendingVBoxImport()
+	if err != nil {
+		t.Fatalf("pendingVBoxImport returned error: %v", err)
+	}
+	if req.VBoxPath != "~/Documents/Win10/Win10.vbox" || req.Name != "Win10-Imported" || req.DiskBus != "sata" || req.Network != "default" || !req.Shared {
+		t.Fatalf("unexpected VirtualBox import request: %#v", req)
+	}
+
+	m.importVBoxName = ""
+	req, err = m.pendingVBoxImport()
+	if err != nil {
+		t.Fatalf("blank override name should use .vbox name: %v", err)
+	}
+	if req.Name != "" {
+		t.Fatalf("blank override should stay blank for remote parser, got %q", req.Name)
+	}
+
+	m.importVBoxPath = "relative.vbox"
+	if _, err := m.pendingVBoxImport(); err == nil {
+		t.Fatal("expected relative .vbox path to fail")
+	}
+	m.importVBoxPath = "~/Documents/Win10/Win10.xml"
+	if _, err := m.pendingVBoxImport(); err == nil {
+		t.Fatal("expected non-.vbox path to fail")
+	}
+}
+
+func TestHostImportVBoxShortcut(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMs,
+		hostTab:    hostTabVMs,
+		activeHost: Host{Name: "iron"},
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd != nil {
+		t.Fatal("opening VirtualBox import form should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeImportVBox || next.importVBoxPath != "~/Documents/" || next.importVBoxDiskBus != "sata" || next.importVBoxNetwork != "default" {
+		t.Fatalf("unexpected VirtualBox import defaults: %#v", next)
+	}
+}
+
+func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
+	script := importVirtualBoxVMScript(vboxImportRequest{
+		VBoxPath: "~/Documents/Win10/Win10.vbox",
+		Name:     "Win10-Imported",
+		DiskBus:  "sata",
+		Network:  "default",
+		Shared:   true,
+	})
+	for _, want := range []string{
+		`python3 - "$vbox" "$name_override"`,
+		`VMRELAY_VBOX_VM`,
+		`VMRELAY_VBOX_DISK`,
+		`qemu-img convert -p -f "$format" -O qcow2 "$source" "$dest"`,
+		`--network "network=${network},model=e1000e"`,
+		`--graphics vnc,listen=127.0.0.1`,
+		`--input type=tablet,bus=usb`,
+		`virsh -c qemu:///system define "$xml"`,
+		`printf '%s\t%s\t%s\t%s\n' "$uuid" "$(whoami)" "$shared" ''`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("VirtualBox import script missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "attach-disk") {
+		t.Fatalf("VirtualBox import should define a new VM, not attach to an existing VM:\n%s", script)
+	}
+
+	path := t.TempDir() + "/import-vbox.sh"
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+		t.Fatalf("VirtualBox import script failed bash -n: %v\n%s\n%s", err, out, script)
 	}
 }
 
