@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.42 - 2026-05-12
+
+- Fixed host setup from the TUI when the remote account needs a sudo password: setup now leaves the TUI, restores the terminal, runs SSH with a real TTY so sudo can prompt, then restarts VMRelay after setup completes.
+- Shortened the Hosts and host-detail VMs footers so `s: setup` is visible alongside the normal navigation controls.
+
 ## 0.2.41 - 2026-05-11
 
 - Added host-level VirtualBox VM import from a remote `.vbox` file. VMRelay parses the VirtualBox name, RAM, CPU count, firmware mode, and attached hard disks; converts copied disks to qcow2 in the selected libvirt storage pool; defines a new system-libvirt VM with VMRelay NAT networking, VNC graphics, USB tablet input, and restart-on-reboot lifecycle; and records VMRelay ownership for the remote SSH user.

@@ -6,7 +6,7 @@ VMRelay is a terminal UI for managing VMs on a normal remote Linux host without 
 vmrelay
 ```
 
-On startup, VMRelay checks the latest GitHub release. If a newer version is available, it asks whether to update; accepting exits the TUI, restores the terminal, runs the installer against `/dev/tty` so sudo password prompts work, then restarts VMRelay.
+On startup, VMRelay checks the latest GitHub release. If a newer version is available, it asks whether to update; accepting exits the TUI, restores the terminal, runs the installer against `/dev/tty` so sudo password prompts work, then restarts VMRelay. Host setup uses the same terminal handoff so remote sudo prompts work over SSH.
 
 VMs run system-wide under `qemu:///system` on the remote host. VMRelay stores local host preferences on the client machine, stores VM ownership metadata on the VM host, and exposes VM graphical consoles through browser-based noVNC tunnels bound to loopback and forwarded over SSH.
 
@@ -29,7 +29,7 @@ Inside the TUI:
 1. Press `a` to add a host such as `iron` with an SSH target such as `aem@iron`.
 2. Press `m` from the bottom controls row to browse and select a saved theme.
 3. Press `t` to test SSH, libvirt, KVM, noVNC, and websockify.
-4. Press `s` to run apt-based setup on Ubuntu/Debian hosts.
+4. Press `s` to leave the TUI and run apt-based setup on Ubuntu/Debian hosts; VMRelay restarts afterward.
 5. Press `Enter` to open the selected host detail screen.
 6. Use `left`/`right` to switch between VMs, Config, and Mappings.
 7. In VMs, press `n` to create a new VM from a remote ISO path or `i` to import a VirtualBox VM from a remote `.vbox` file; use up/down to move fields and left/right to cycle preset values.
@@ -43,7 +43,7 @@ Inside the TUI:
 ## Capabilities
 
 - Host manager opens by default; there is no separate day-to-day CLI workflow.
-- Startup prompts for update-and-restart when a newer GitHub release is available, handing off to a restored `/dev/tty` terminal before running the installer so interactive sudo prompts work correctly.
+- Startup prompts for update-and-restart when a newer GitHub release is available, handing off to a restored `/dev/tty` terminal before running the installer so interactive sudo prompts work correctly; host setup uses the same handoff before running remote SSH setup with a TTY.
 - The TUI uses a full-screen terminal layout with a VMRelay title border, one outer line frame, and ten selectable themes.
 - Hosts are reached over SSH and managed through system libvirt at `qemu:///system`.
 - Host setup installs/checks `qemu-kvm`, libvirt clients/daemon, `virt-install`/`virt-clone`, `qemu-utils`, Python 3, OVMF/UEFI/Secure Boot firmware, `swtpm`, noVNC, websockify, and a lightweight mapping relay (`systemd-socket-proxyd` when present, `socat` as the apt-installed fallback), ensures the libvirt `default` NAT network is active/autostarted, then initializes a VMRelay libvirt storage pool at `/var/lib/vmrelay/images`.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -193,6 +194,8 @@ type Model struct {
 	activeHost        Host
 	updateInfo        updateInfo
 	updateExit        bool
+	setupExit         bool
+	setupHost         Host
 	vmRefreshInFlight bool
 	pendingLaunches   map[string]time.Time
 	pendingShutdowns  map[string]time.Time
@@ -298,6 +301,10 @@ func InstallCommand() string {
 
 func (m Model) UpdateRequested() bool {
 	return m.updateExit
+}
+
+func (m Model) SetupRequested() (Host, bool) {
+	return m.setupHost, m.setupExit
 }
 
 type theme struct {
@@ -602,10 +609,7 @@ func (m Model) updateHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		if h, ok := m.selectedHost(); ok {
-			return m.busy(modeHosts, "Running setup on "+h.Name+"...", "setup", func() resultMsg {
-				out, err := setupHost(h)
-				return resultMsg{op: "setup", output: out, err: err}
-			})
+			return m.requestInteractiveSetup(h)
 		}
 	case "enter", "r":
 		if h, ok := m.selectedHost(); ok {
@@ -987,10 +991,7 @@ func (m Model) updateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "s":
-		return m.busy(modeVMs, "Running setup on "+m.activeHost.Name+"...", "setup", func() resultMsg {
-			out, err := setupHost(m.activeHost)
-			return resultMsg{op: "setup", output: out, err: err}
-		})
+		return m.requestInteractiveSetup(m.activeHost)
 	case "d":
 		if m.hostTab == hostTabMappings {
 			mapping, ok := m.selectedMapping()
@@ -1294,6 +1295,14 @@ func (m Model) runPowerAction(vm VM, detailRefresh bool) (tea.Model, tea.Cmd) {
 		}
 		return resultMsg{op: action, output: out, host: h, vm: vm, background: true, detailRefresh: detailRefresh, err: err}
 	}
+}
+
+func (m Model) requestInteractiveSetup(h Host) (tea.Model, tea.Cmd) {
+	m.setupExit = true
+	m.setupHost = h
+	m.status = "Leaving VMRelay to run setup for " + h.Name + " in your terminal..."
+	m.errText = ""
+	return m, tea.Quit
 }
 
 func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
@@ -3114,7 +3123,7 @@ func (m Model) helpText() string {
 			case hostTabMappings:
 				return "?: help  m: themes  b: hosts  left/right: tabs  n: add  e: start/stop  d: remove  s: setup"
 			default:
-				return "?: help  m: themes  b: hosts  enter: detail  n: create VM  i: import VBox  r: refresh  p/f: power"
+				return "?: help  b: hosts  enter: detail  s: setup  n: create VM  i: import  r: refresh  p/f: power"
 			}
 		case modeVMDetail:
 			switch m.vmTab {
@@ -3152,10 +3161,10 @@ func (m Model) helpText() string {
 		case modeUpdate:
 			return "enter/y: update in terminal  n/esc: skip  q: quit"
 		default:
-			return "?: help  m: themes  a: add host  enter/r: open host  t: test  s: setup  d: remove  q: quit"
+			return "?: help  enter: open  s: setup  t: test  a: add  d: remove  m: themes"
 		}
 	}
-	return "Hosts: a add, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions use up/down then enter. Mappings: n add VM service, e start/stop, d remove."
+	return "Hosts: a add, s setup, t test, m themes, enter open host. Host detail: enter opens VM detail. VM detail: disks n/i/x, NICs n/x, actions use up/down then enter. Mappings: n add VM service, e start/stop, d remove."
 }
 
 func ownerLabel(owner string) string {
@@ -3735,6 +3744,10 @@ fi
 }
 
 func setupHost(h Host) (string, error) {
+	return ssh(h.Target, setupHostScript(false), 15*time.Minute)
+}
+
+func setupHostScript(interactive bool) string {
 	script := `
 set -euo pipefail
 if command -v apt-get >/dev/null 2>&1; then
@@ -3805,7 +3818,30 @@ state="$(sudo -n virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F:
 [ "$state" = "running" ] || { echo "VMRelay storage pool could not be started." >&2; exit 1; }
 echo "Host setup complete. VMRelay ownership state is /var/lib/vmrelay/ownership.tsv. Storage pool vmrelay is /var/lib/vmrelay/images. VM service mappings use $relay_tool on the libvirt bridge."
 `
-	return ssh(h.Target, script, 15*time.Minute)
+	if interactive {
+		script = strings.ReplaceAll(script, "sudo -n ", "sudo ")
+	}
+	return script
+}
+
+func RunInteractiveSetup(h Host, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.Command("ssh", interactiveSetupSSHArgs(h.Target, setupHostScript(true))...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func interactiveSetupSSHArgs(target, script string) []string {
+	remote := "bash -se <<'VMRELAY_SETUP'\n" + script + "\nVMRELAY_SETUP"
+	return []string{
+		"-tt",
+		"-o", "ConnectTimeout=8",
+		"-o", "ServerAliveInterval=30",
+		"-o", "ServerAliveCountMax=3",
+		target,
+		remote,
+	}
 }
 
 func listVMs(h Host) ([]VM, string, error) {

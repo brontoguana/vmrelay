@@ -56,7 +56,7 @@ func TestViewFrameFillsWindow(t *testing.T) {
 	if !strings.Contains(stripANSI(lines[0]), "VMRelay 0.2.3") {
 		t.Fatalf("top border missing title/version: %q", lines[0])
 	}
-	if !strings.Contains(stripANSI(lines[len(lines)-2]), "?: help  m: themes") {
+	if !strings.Contains(stripANSI(lines[len(lines)-2]), "s: setup") {
 		t.Fatalf("footer was not anchored above the bottom border: %q", lines[len(lines)-2])
 	}
 	if !strings.Contains(stripANSI(lines[len(lines)-3]), "Ready.") {
@@ -145,6 +145,50 @@ func TestUpdatePromptQuitsForTerminalInstaller(t *testing.T) {
 	next = updated.(Model)
 	if next.UpdateRequested() {
 		t.Fatal("skipping update should not mark update requested")
+	}
+}
+
+func TestHostSetupQuitsForTerminalSSH(t *testing.T) {
+	host := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	m := Model{
+		config:     Config{Theme: "Classic", Hosts: []Host{host}},
+		mode:       modeHosts,
+		hostCursor: 0,
+	}
+
+	updated, cmd := m.updateHostKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("setup should quit the TUI for interactive SSH handoff")
+	}
+	next := updated.(Model)
+	got, ok := next.SetupRequested()
+	if !ok || got != host {
+		t.Fatalf("setup request = %#v, %v; want %#v, true", got, ok, host)
+	}
+	if !strings.Contains(next.status, "Leaving VMRelay") {
+		t.Fatalf("setup handoff status should explain terminal setup, got %q", next.status)
+	}
+}
+
+func TestInteractiveSetupUsesTTYSSHAndPromptingSudo(t *testing.T) {
+	script := setupHostScript(true)
+	if strings.Contains(script, "sudo -n") {
+		t.Fatalf("interactive setup script should allow sudo prompts:\n%s", script)
+	}
+	if !strings.Contains(setupHostScript(false), "sudo -n") {
+		t.Fatal("non-interactive setup should keep passwordless sudo checks")
+	}
+
+	args := interactiveSetupSSHArgs("simplehelp@iron.simplehelp.io", script)
+	joined := strings.Join(args, "\x00")
+	if !containsArg(args, "-tt") {
+		t.Fatalf("interactive setup should allocate a remote tty, args=%#v", args)
+	}
+	if strings.Contains(joined, "BatchMode=yes") {
+		t.Fatalf("interactive setup should not force BatchMode, args=%#v", args)
+	}
+	if !strings.Contains(args[len(args)-1], "VMRELAY_SETUP") || !strings.Contains(args[len(args)-1], "bash -se") {
+		t.Fatalf("interactive setup should embed the remote script instead of piping it over stdin, args=%#v", args)
 	}
 }
 
@@ -1367,4 +1411,13 @@ func (e errTest) Error() string { return string(e) }
 
 func stripANSI(s string) string {
 	return ansiRE.ReplaceAllString(s, "")
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }

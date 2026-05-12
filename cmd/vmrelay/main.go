@@ -11,7 +11,7 @@ import (
 	"github.com/brontoguana/vmrelay/internal/app"
 )
 
-var version = "0.2.41"
+var version = "0.2.42"
 
 func main() {
 	for _, arg := range os.Args[1:] {
@@ -39,12 +39,38 @@ func main() {
 		fmt.Fprintf(os.Stderr, "vmrelay: %v\n", err)
 		os.Exit(1)
 	}
-	if m, ok := finalModel.(app.Model); ok && m.UpdateRequested() {
-		if err := runInstallerAndRestart(); err != nil {
-			fmt.Fprintf(os.Stderr, "vmrelay: update failed: %v\n", err)
-			os.Exit(1)
+	if m, ok := finalModel.(app.Model); ok {
+		if h, setup := m.SetupRequested(); setup {
+			if err := runSetupAndRestart(h); err != nil {
+				fmt.Fprintf(os.Stderr, "vmrelay: setup failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if m.UpdateRequested() {
+			if err := runInstallerAndRestart(); err != nil {
+				fmt.Fprintf(os.Stderr, "vmrelay: update failed: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
+}
+
+func runSetupAndRestart(h app.Host) error {
+	terminal := installerTerminal()
+	defer terminal.close()
+
+	fmt.Fprintf(terminal.err(), "VMRelay is running setup for %s (%s). If prompted, enter the remote sudo password.\n", h.Name, h.Target)
+	repairInstallerTerminal()
+	if err := app.RunInteractiveSetup(h, terminal.in(), terminal.out(), terminal.err()); err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(terminal.err(), "VMRelay setup finished. Restarting...")
+	argv := append([]string{exe}, os.Args[1:]...)
+	return syscall.Exec(exe, argv, os.Environ())
 }
 
 func runInstallerAndRestart() error {
