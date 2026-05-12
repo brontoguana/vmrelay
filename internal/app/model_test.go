@@ -192,6 +192,21 @@ func TestInteractiveSetupUsesTTYSSHAndPromptingSudo(t *testing.T) {
 	}
 }
 
+func TestSetupScriptSupportsModernAndLegacyQemuPackages(t *testing.T) {
+	script := setupHostScript(false)
+	for _, want := range []string{
+		`qemu_pkg=qemu-system-x86`,
+		`apt-cache show "$qemu_pkg"`,
+		`apt-cache show qemu-kvm`,
+		`apt-get install -y "$qemu_pkg" libvirt-daemon-system`,
+		`could not find qemu-system-x86 or qemu-kvm`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("setup script missing %q:\n%s", want, script)
+		}
+	}
+}
+
 func TestVMListFailureNamesHost(t *testing.T) {
 	text := failureText(resultMsg{op: "vms", err: errTest("exit status 1")}, Model{activeHost: Host{Name: "iron"}})
 	if text != "Failed to open iron: exit status 1" {

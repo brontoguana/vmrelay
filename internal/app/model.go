@@ -3752,9 +3752,18 @@ func setupHostScript(interactive bool) string {
 set -euo pipefail
 if command -v apt-get >/dev/null 2>&1; then
   sudo -n apt-get update
-  sudo -n apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf swtpm novnc websockify python3 socat
+  qemu_pkg=qemu-system-x86
+  if ! apt-cache show "$qemu_pkg" >/dev/null 2>&1; then
+    if apt-cache show qemu-kvm >/dev/null 2>&1; then
+      qemu_pkg=qemu-kvm
+    else
+      echo "Automatic setup could not find qemu-system-x86 or qemu-kvm in apt." >&2
+      exit 1
+    fi
+  fi
+  sudo -n apt-get install -y "$qemu_pkg" libvirt-daemon-system libvirt-clients virtinst qemu-utils ovmf swtpm novnc websockify python3 socat
 else
-  echo "Automatic setup currently supports apt-based hosts. Install KVM/libvirt/virt-install/qemu-utils/ovmf/swtpm/novnc/websockify/python3 plus systemd-socket-proxyd or socat manually."
+  echo "Automatic setup currently supports apt-based hosts. Install qemu-system-x86 or qemu-kvm, KVM/libvirt/virt-install/qemu-utils/ovmf/swtpm/novnc/websockify/python3 plus systemd-socket-proxyd or socat manually."
 fi
 group=libvirt
 if ! getent group "$group" >/dev/null 2>&1; then group=libvirt-qemu; fi

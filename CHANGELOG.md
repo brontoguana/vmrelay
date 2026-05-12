@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.43 - 2026-05-12
+
+- Changed apt-based host setup to prefer Ubuntu's modern `qemu-system-x86` package while falling back to the legacy `qemu-kvm` package when needed, so setup works across Ubuntu releases with either package layout.
+
 ## 0.2.42 - 2026-05-12
 
 - Fixed host setup from the TUI when the remote account needs a sudo password: setup now leaves the TUI, restores the terminal, runs SSH with a real TTY so sudo can prompt, then restarts VMRelay after setup completes.
