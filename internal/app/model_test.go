@@ -170,6 +170,92 @@ func TestHostSetupQuitsForTerminalSSH(t *testing.T) {
 	}
 }
 
+func TestAddHostPromptsForSetup(t *testing.T) {
+	m := Model{
+		configPath: t.TempDir() + "/config.json",
+		config:     Config{Theme: "Classic"},
+		mode:       modeAddHost,
+		addName:    "zinc",
+		addTarget:  "simplehelp@zinc.simplehelp.io",
+		addField:   1,
+	}
+
+	updated, cmd := m.updateAddHostKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("adding a host should not run setup until the prompt is accepted")
+	}
+	next := updated.(Model)
+	if next.mode != modeHostSetupPrompt {
+		t.Fatalf("mode = %v, want setup prompt", next.mode)
+	}
+	if next.promptHost.Name != "zinc" || next.promptHost.Target != "simplehelp@zinc.simplehelp.io" {
+		t.Fatalf("unexpected prompt host: %#v", next.promptHost)
+	}
+	view := stripANSI(next.viewHostSetupPrompt(80, 20))
+	if !strings.Contains(view, "Run Host Setup?") || !strings.Contains(view, "simplehelp@zinc.simplehelp.io") {
+		t.Fatalf("setup prompt missing host details:\n%s", view)
+	}
+
+	updated, cmd = next.updateHostSetupPromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("accepting setup should quit the TUI for the interactive handoff")
+	}
+	next = updated.(Model)
+	got, ok := next.SetupRequested()
+	if !ok || got.Name != "zinc" {
+		t.Fatalf("setup request = %#v, %v; want zinc, true", got, ok)
+	}
+}
+
+func TestDeleteHostRequiresConfirmation(t *testing.T) {
+	host := Host{Name: "zinc", Target: "simplehelp@zinc.simplehelp.io"}
+	other := Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"}
+	m := Model{
+		configPath: t.TempDir() + "/config.json",
+		config: Config{
+			Theme: "Classic",
+			Hosts: []Host{host, other},
+			Mappings: []PortMapping{
+				{ID: "keep", Host: "iron", Name: "Keep", LocalPort: 8000, RemoteHost: "127.0.0.1", RemotePort: 8001},
+				{ID: "drop", Host: "zinc", Name: "Drop", LocalPort: 9000, RemoteHost: "127.0.0.1", RemotePort: 9001},
+			},
+		},
+		mode:       modeHosts,
+		hostCursor: 0,
+	}
+
+	updated, _ := m.updateHostKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next := updated.(Model)
+	if next.mode != modeDeleteHostConfirm {
+		t.Fatalf("mode = %v, want delete confirmation", next.mode)
+	}
+	if len(next.config.Hosts) != 2 || next.config.Hosts[0].Name != "zinc" {
+		t.Fatalf("host should not be removed before confirmation: %#v", next.config.Hosts)
+	}
+	view := stripANSI(next.viewDeleteHostConfirm(80, 20))
+	if !strings.Contains(view, "Remove Host?") || !strings.Contains(view, "does not delete remote VMs") {
+		t.Fatalf("delete confirmation should explain impact:\n%s", view)
+	}
+
+	updated, _ = next.updateDeleteHostConfirmKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	cancelled := updated.(Model)
+	if cancelled.mode != modeHosts || len(cancelled.config.Hosts) != 2 {
+		t.Fatalf("cancel should keep hosts and return to hosts: mode=%v hosts=%#v", cancelled.mode, cancelled.config.Hosts)
+	}
+
+	updated, _ = next.updateDeleteHostConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	confirmed := updated.(Model)
+	if confirmed.mode != modeHosts {
+		t.Fatalf("mode = %v, want hosts", confirmed.mode)
+	}
+	if len(confirmed.config.Hosts) != 1 || confirmed.config.Hosts[0].Name != "iron" {
+		t.Fatalf("unexpected hosts after delete: %#v", confirmed.config.Hosts)
+	}
+	if len(confirmed.config.Mappings) != 1 || confirmed.config.Mappings[0].ID != "keep" {
+		t.Fatalf("host mappings were not removed correctly: %#v", confirmed.config.Mappings)
+	}
+}
+
 func TestInteractiveSetupUsesTTYSSHAndPromptingSudo(t *testing.T) {
 	script := setupHostScript(true)
 	if strings.Contains(script, "sudo -n") {
@@ -204,6 +290,25 @@ func TestSetupScriptSupportsModernAndLegacyQemuPackages(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("setup script missing %q:\n%s", want, script)
 		}
+	}
+}
+
+func TestSetupScriptAvoidsPipefailSIGPIPELookups(t *testing.T) {
+	script := setupHostScript(false)
+	for _, bad := range []string{
+		`| head -n 1`,
+		`print $2; exit`,
+	} {
+		if strings.Contains(script, bad) {
+			t.Fatalf("setup script contains SIGPIPE-prone lookup %q:\n%s", bad, script)
+		}
+	}
+	path := t.TempDir() + "/setup.sh"
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+		t.Fatalf("setup script failed bash -n: %v\n%s\n%s", err, out, script)
 	}
 }
 

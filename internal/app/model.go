@@ -97,6 +97,8 @@ const (
 	modeAddNIC
 	modeDuplicateVM
 	modeRenameVM
+	modeHostSetupPrompt
+	modeDeleteHostConfirm
 	modeTheme
 	modeUpdate
 	modeBusy
@@ -196,6 +198,7 @@ type Model struct {
 	updateExit        bool
 	setupExit         bool
 	setupHost         Host
+	promptHost        Host
 	vmRefreshInFlight bool
 	pendingLaunches   map[string]time.Time
 	pendingShutdowns  map[string]time.Time
@@ -494,6 +497,10 @@ func (m Model) View() string {
 		b.WriteString(m.viewDuplicateVM(innerW, contentH))
 	case modeRenameVM:
 		b.WriteString(m.viewRenameVM(innerW, contentH))
+	case modeHostSetupPrompt:
+		b.WriteString(m.viewHostSetupPrompt(innerW, contentH))
+	case modeDeleteHostConfirm:
+		b.WriteString(m.viewDeleteHostConfirm(innerW, contentH))
 	case modeTheme:
 		b.WriteString(m.viewThemes(innerW, contentH))
 	case modeUpdate:
@@ -523,7 +530,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -557,6 +564,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDuplicateVMKey(msg)
 	case modeRenameVM:
 		return m.updateRenameVMKey(msg)
+	case modeHostSetupPrompt:
+		return m.updateHostSetupPromptKey(msg)
+	case modeDeleteHostConfirm:
+		return m.updateDeleteHostConfirmKey(msg)
 	case modeTheme:
 		return m.updateThemeKey(msg)
 	case modeUpdate:
@@ -587,18 +598,10 @@ func (m Model) updateHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Add a host name and SSH target."
 	case "d":
 		if len(m.config.Hosts) > 0 {
-			removed := m.config.Hosts[m.hostCursor]
-			m.config.Hosts = append(m.config.Hosts[:m.hostCursor], m.config.Hosts[m.hostCursor+1:]...)
-			m.removeHostMappings(removed.Name)
-			if m.hostCursor >= len(m.config.Hosts) && m.hostCursor > 0 {
-				m.hostCursor--
-			}
-			if err := saveConfig(m.configPath, m.config); err != nil {
-				m.errText = err.Error()
-			} else {
-				m.status = "Removed host " + removed.Name + "."
-				m.errText = ""
-			}
+			m.promptHost = m.config.Hosts[m.hostCursor]
+			m.mode = modeDeleteHostConfirm
+			m.status = "Confirm removing host " + m.promptHost.Name + "."
+			m.errText = ""
 		}
 	case "t":
 		if h, ok := m.selectedHost(); ok {
@@ -656,8 +659,10 @@ func (m Model) updateAddHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.errText = err.Error()
 			return m, nil
 		}
-		m.mode = modeHosts
-		m.status = "Added host " + name + ". Press t to test SSH or s to run setup."
+		added := Host{Name: name, Target: target}
+		m.mode = modeHostSetupPrompt
+		m.promptHost = added
+		m.status = "Added host " + name + "."
 		m.errText = ""
 		m.hostCursor = indexHost(m.config.Hosts, name)
 	case "backspace", "ctrl+h":
@@ -675,6 +680,53 @@ func (m Model) updateAddHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.addTarget += text
 			}
 		}
+	}
+	return m, nil
+}
+
+func (m Model) updateHostSetupPromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "y":
+		return m.requestInteractiveSetup(m.promptHost)
+	case "n", "esc":
+		m.mode = modeHosts
+		m.status = "Added host " + m.promptHost.Name + ". Setup skipped."
+		m.errText = ""
+		m.promptHost = Host{}
+	}
+	return m, nil
+}
+
+func (m Model) updateDeleteHostConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "y":
+		removed := m.promptHost
+		index := indexHost(m.config.Hosts, removed.Name)
+		if index < 0 {
+			m.mode = modeHosts
+			m.status = "Host already removed."
+			m.errText = ""
+			m.promptHost = Host{}
+			return m, nil
+		}
+		m.config.Hosts = append(m.config.Hosts[:index], m.config.Hosts[index+1:]...)
+		m.removeHostMappings(removed.Name)
+		if m.hostCursor >= len(m.config.Hosts) && m.hostCursor > 0 {
+			m.hostCursor--
+		}
+		if err := saveConfig(m.configPath, m.config); err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		m.mode = modeHosts
+		m.status = "Removed host " + removed.Name + "."
+		m.errText = ""
+		m.promptHost = Host{}
+	case "n", "esc":
+		m.mode = modeHosts
+		m.status = "Cancelled removing host " + m.promptHost.Name + "."
+		m.errText = ""
+		m.promptHost = Host{}
 	}
 	return m, nil
 }
@@ -2652,6 +2704,18 @@ func (m Model) viewAddHost(width, height int) string {
 	return m.styles().pane.Width(max(40, width-4)).Height(max(3, height-2)).Render(body)
 }
 
+func (m Model) viewHostSetupPrompt(width, height int) string {
+	body := fmt.Sprintf("Run Host Setup?\n\nHost:   %s\nTarget: %s\n\nRun VMRelay setup on this host now?\n\nEnter/y runs setup in your terminal.\nN or Esc skips setup.",
+		m.promptHost.Name, m.promptHost.Target)
+	return m.styles().pane.Width(max(48, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
+func (m Model) viewDeleteHostConfirm(width, height int) string {
+	body := fmt.Sprintf("Remove Host?\n\nHost:   %s\nTarget: %s\n\nThis removes the local VMRelay host entry and its local mappings.\nIt does not delete remote VMs.\n\nEnter/y removes the host.\nN or Esc cancels.",
+		m.promptHost.Name, m.promptHost.Target)
+	return m.styles().pane.Width(max(52, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) viewHostDetail(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
@@ -3156,6 +3220,10 @@ func (m Model) helpText() string {
 			return "type name  enter: duplicate  esc: cancel"
 		case modeRenameVM:
 			return "type name  enter: rename  esc: cancel"
+		case modeHostSetupPrompt:
+			return "enter/y: run setup  n/esc: skip  q: quit"
+		case modeDeleteHostConfirm:
+			return "enter/y: remove host  n/esc: cancel  q: quit"
 		case modeTheme:
 			return "up/down: browse themes  enter: select  esc/b: back  q: quit"
 		case modeUpdate:
@@ -3790,7 +3858,7 @@ NETXML
 fi
 sudo -n virsh -c qemu:///system net-start default >/dev/null 2>&1 || true
 sudo -n virsh -c qemu:///system net-autostart default >/dev/null
-bridge_addr="$(sudo -n virsh -c qemu:///system net-dumpxml default 2>/dev/null | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p; s/.*<ip address=\"\([^\"]*\)\".*/\1/p" | head -n 1)"
+bridge_addr="$(sudo -n virsh -c qemu:///system net-dumpxml default 2>/dev/null | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p; s/.*<ip address=\"\([^\"]*\)\".*/\1/p")"
 [ -n "$bridge_addr" ] || bridge_addr=192.168.122.1
 if command -v systemd-socket-activate >/dev/null 2>&1 &&
   { command -v systemd-socket-proxyd >/dev/null 2>&1 || [ -x /usr/lib/systemd/systemd-socket-proxyd ] || [ -x /lib/systemd/systemd-socket-proxyd ]; }; then
@@ -3823,7 +3891,7 @@ fi
 sudo -n virsh -c qemu:///system pool-build vmrelay >/dev/null 2>&1 || true
 sudo -n virsh -c qemu:///system pool-start vmrelay >/dev/null 2>&1 || true
 sudo -n virsh -c qemu:///system pool-autostart vmrelay >/dev/null
-state="$(sudo -n virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+state="$(sudo -n virsh -c qemu:///system pool-info vmrelay 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); state=$2 } END { print state }')"
 [ "$state" = "running" ] || { echo "VMRelay storage pool could not be started." >&2; exit 1; }
 echo "Host setup complete. VMRelay ownership state is /var/lib/vmrelay/ownership.tsv. Storage pool vmrelay is /var/lib/vmrelay/images. VM service mappings use $relay_tool on the libvirt bridge."
 `

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.44 - 2026-05-12
+
+- Added a setup prompt after adding a host, so users can immediately run host setup from the restored terminal.
+- Added a confirmation screen before removing a host; cancel keeps the host and local mappings untouched.
+- Fixed apt-based host setup reporting `exit status 141` after otherwise successful Ubuntu setup by removing SIGPIPE-prone first-line lookup pipelines from the setup script.
+
 ## 0.2.43 - 2026-05-12
 
 - Changed apt-based host setup to prefer Ubuntu's modern `qemu-system-x86` package while falling back to the legacy `qemu-kvm` package when needed, so setup works across Ubuntu releases with either package layout.
