@@ -92,6 +92,7 @@ const (
 	modeCreateVM
 	modeImportVBox
 	modeISOPicker
+	modeImportSourcePicker
 	modeAddDisk
 	modeImportDisk
 	modeAddNIC
@@ -487,6 +488,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewImportVBox(innerW, contentH))
 	case modeISOPicker:
 		b.WriteString(m.viewISOPicker(innerW, contentH))
+	case modeImportSourcePicker:
+		b.WriteString(m.viewImportSourcePicker(innerW, contentH))
 	case modeAddDisk:
 		b.WriteString(m.viewAddDisk(innerW, contentH))
 	case modeImportDisk:
@@ -530,7 +533,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeImportSourcePicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -554,6 +557,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateImportVBoxKey(msg)
 	case modeISOPicker:
 		return m.updateISOPickerKey(msg)
+	case modeImportSourcePicker:
+		return m.updateImportSourcePickerKey(msg)
 	case modeAddDisk:
 		return m.updateAddDiskKey(msg)
 	case modeImportDisk:
@@ -900,6 +905,9 @@ func (m Model) updateImportVBoxKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right":
 		m.cycleImportVBoxField(1)
 	case "enter":
+		if m.importVBoxField == importVBoxFieldPath {
+			return m.loadImportSourceDir(m.importSourceStartDir())
+		}
 		if m.importVBoxField < importVBoxFieldCount-1 {
 			m.importVBoxField++
 			return m, nil
@@ -913,7 +921,7 @@ func (m Model) updateImportVBoxKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if label == "" {
 			label = filepath.Base(req.VBoxPath)
 		}
-		return m.busy(modeVMs, "Importing VirtualBox VM "+label+" on "+m.activeHost.Name+"...", "vbox-import", func() resultMsg {
+		return m.busy(modeVMs, "Importing VM "+label+" on "+m.activeHost.Name+"...", "vbox-import", func() resultMsg {
 			out, err := importVirtualBoxVM(m.activeHost, req)
 			return resultMsg{op: "vbox-import", output: out, err: err}
 		})
@@ -971,6 +979,38 @@ func (m Model) updateISOPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.createVMISO = entry.Path
 		m.mode = modeCreateVM
 		m.status = "Selected ISO " + entry.Path + "."
+		m.errText = ""
+	}
+	return m, nil
+}
+
+func (m Model) updateImportSourcePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeImportVBox
+		m.status = "Returned to VM import."
+		m.errText = ""
+	case "up", "k":
+		if m.isoCursor > 0 {
+			m.isoCursor--
+		}
+	case "down", "j":
+		if m.isoCursor < len(m.isoEntries)-1 {
+			m.isoCursor++
+		}
+	case "left", "h", "backspace", "ctrl+h":
+		return m.loadImportSourceDir(parentDir(m.isoDir))
+	case "enter", "right", "l":
+		if len(m.isoEntries) == 0 || m.isoCursor < 0 || m.isoCursor >= len(m.isoEntries) {
+			return m, nil
+		}
+		entry := m.isoEntries[m.isoCursor]
+		if entry.Dir {
+			return m.loadImportSourceDir(entry.Path)
+		}
+		m.importVBoxPath = entry.Path
+		m.mode = modeImportVBox
+		m.status = "Selected import source " + entry.Path + "."
 		m.errText = ""
 	}
 	return m, nil
@@ -1168,7 +1208,10 @@ func (m Model) beginImportVBox() Model {
 	m.importVBoxNetwork = "default"
 	m.importVBoxShared = "no"
 	m.importVBoxField = 0
-	m.status = "Import a VirtualBox VM from a remote .vbox file."
+	m.isoDir = strings.TrimRight(defaultCreateVMISOPath, "/")
+	m.isoEntries = nil
+	m.isoCursor = 0
+	m.status = "Import a VM from a remote .vbox, .vdi, .vmdk, or .vmx source."
 	m.errText = ""
 	return m
 }
@@ -1266,6 +1309,21 @@ func (m Model) isoStartDir() string {
 		return "/"
 	}
 	if strings.EqualFold(filepath.Ext(path), ".iso") {
+		return parentDir(path)
+	}
+	return path
+}
+
+func (m Model) importSourceStartDir() string {
+	path := strings.TrimSpace(m.importVBoxPath)
+	if path == "" {
+		return strings.TrimRight(defaultCreateVMISOPath, "/")
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
+	}
+	if validImportSourceExt(filepath.Ext(path)) {
 		return parentDir(path)
 	}
 	return path
@@ -2073,6 +2131,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			m.isoCursor = max(0, len(m.isoEntries)-1)
 		}
 		m.status = fmt.Sprintf("Browsing %s. Select a directory or ISO.", m.isoDir)
+	case "import-source-list":
+		m.isoDir = msg.dir
+		m.isoEntries = msg.files
+		if m.isoCursor >= len(m.isoEntries) {
+			m.isoCursor = max(0, len(m.isoEntries)-1)
+		}
+		m.status = fmt.Sprintf("Browsing %s. Select a VM import source.", m.isoDir)
 	case "start", "shutdown", "destroy", "adopt", "share":
 		actionStatus := strings.TrimSpace(msg.output)
 		if actionStatus == "" {
@@ -2144,6 +2209,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "Failed to load VM detail: " + msg.err.Error()
 	case "iso-list":
 		return "ISO browser failed: " + msg.err.Error()
+	case "import-source-list":
+		return "Import source browser failed: " + msg.err.Error()
 	case "check":
 		return "Host check failed: " + msg.err.Error()
 	case "setup":
@@ -2240,6 +2307,25 @@ func (m Model) loadISODir(dir string) (tea.Model, tea.Cmd) {
 			actualDir = dir
 		}
 		return resultMsg{op: "iso-list", output: out, dir: actualDir, files: entries, err: err}
+	}
+}
+
+func (m Model) loadImportSourceDir(dir string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(dir) == "" {
+		dir = strings.TrimRight(defaultCreateVMISOPath, "/")
+	}
+	m.priorMode = modeImportSourcePicker
+	m.mode = modeBusy
+	m.isoDir = dir
+	m.status = "Browsing remote VM import sources in " + dir + "..."
+	m.errText = ""
+	return m, func() tea.Msg {
+		entries, out, err := listRemoteImportSourceEntries(m.activeHost, dir)
+		actualDir := isoDirFromOutput(out)
+		if actualDir == "" {
+			actualDir = dir
+		}
+		return resultMsg{op: "import-source-list", output: out, dir: actualDir, files: entries, err: err}
 	}
 }
 
@@ -2402,11 +2488,11 @@ func (m Model) pendingVMCreate() (vmCreateRequest, error) {
 
 func (m Model) pendingVBoxImport() (vboxImportRequest, error) {
 	vboxPath := strings.TrimSpace(m.importVBoxPath)
-	if err := validateRequiredRemotePath(vboxPath, ".vbox path"); err != nil {
+	if err := validateRequiredRemotePath(vboxPath, "import source path"); err != nil {
 		return vboxImportRequest{}, err
 	}
-	if strings.HasSuffix(vboxPath, "/") || !strings.EqualFold(filepath.Ext(vboxPath), ".vbox") {
-		return vboxImportRequest{}, fmt.Errorf(".vbox path must point to a .vbox file")
+	if strings.HasSuffix(vboxPath, "/") || !validImportSourceExt(filepath.Ext(vboxPath)) {
+		return vboxImportRequest{}, fmt.Errorf("import source must point to a .vbox, .vdi, .vmdk, or .vmx file; press Enter on Source to browse")
 	}
 	name := strings.TrimSpace(m.importVBoxName)
 	if name != "" {
@@ -2436,6 +2522,15 @@ func (m Model) pendingVBoxImport() (vboxImportRequest, error) {
 		return vboxImportRequest{}, fmt.Errorf("shared must be y/n")
 	}
 	return vboxImportRequest{VBoxPath: vboxPath, Name: name, DiskBus: diskBus, Network: network, Shared: shared}, nil
+}
+
+func validImportSourceExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".vbox", ".vdi", ".vmdk", ".vmx":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) pendingDuplicateVMName() (string, error) {
@@ -2969,20 +3064,21 @@ func (m Model) viewImportVBox(width, height int) string {
 	valueW := max(8, contentW-14)
 	displayName := m.importVBoxName
 	if strings.TrimSpace(displayName) == "" {
-		displayName = "(from .vbox)"
+		displayName = "(from source)"
 	}
 	lines := []string{
-		"Import VirtualBox VM on " + m.activeHost.Name,
+		"Import VM on " + m.activeHost.Name,
 		"",
-		createVMFormRow(cursors[importVBoxFieldPath], "VBox path", m.importVBoxPath, valueW, m.importVBoxField == importVBoxFieldPath),
+		createVMFormRow(cursors[importVBoxFieldPath], "Source", m.importVBoxPath, valueW, m.importVBoxField == importVBoxFieldPath),
 		createVMFormRow(cursors[importVBoxFieldName], "New name", displayName, valueW, m.importVBoxField == importVBoxFieldName),
 		createVMFormRow(cursors[importVBoxFieldDiskBus], "Disk bus", m.importVBoxDiskBus, valueW, m.importVBoxField == importVBoxFieldDiskBus),
 		createVMFormRow(cursors[importVBoxFieldNetwork], "Network", m.importVBoxNetwork, valueW, m.importVBoxField == importVBoxFieldNetwork),
 		createVMFormRow(cursors[importVBoxFieldShared], "Shared", sharedChoiceLabel(m.importVBoxShared), valueW, m.importVBoxField == importVBoxFieldShared),
 		"",
-		"VMRelay reads RAM, CPU count, EFI/BIOS mode, and attached hard disks from the .vbox file.",
-		"VirtualBox networking is ignored; the imported VM uses VMRelay NAT, VNC graphics, and USB tablet input.",
-		"Disks are copied and converted to qcow2 in the selected libvirt storage pool; the original VirtualBox VM is left untouched.",
+		"Enter on Source opens a remote browser for .vbox, .vdi, .vmdk, and .vmx files.",
+		"VMRelay reads metadata from .vbox/.vmx files; bare disk imports use safe defaults unless you override the name.",
+		"VirtualBox or VMware networking is ignored; the imported VM uses VMRelay NAT, VNC graphics, and USB tablet input.",
+		"Disks are copied and converted to qcow2 in the selected libvirt storage pool; the original files are left untouched.",
 		"Disk bus: sata is safest for Windows imports unless virtio drivers are already installed.",
 		"Enter moves fields/imports. Left/right changes preset fields. Esc cancels.",
 	}
@@ -3019,6 +3115,38 @@ func (m Model) viewISOPicker(width, height int) string {
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\nEnter/right opens a directory or selects an ISO. Left/backspace goes up. Esc returns.")
+	return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.TrimRight(b.String(), "\n"), width-6, height-4))
+}
+
+func (m Model) viewImportSourcePicker(width, height int) string {
+	var b strings.Builder
+	s := m.styles()
+	b.WriteString("Select VM Import Source on " + m.activeHost.Name + "\n")
+	b.WriteString(s.faint.Render(m.isoDir) + "\n\n")
+	if len(m.isoEntries) == 0 {
+		b.WriteString("No directories or VM import files found here.\n\nLeft/backspace moves to the parent directory. Esc returns to the import form.")
+		return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(b.String(), width-6, height-4))
+	}
+	nameW := max(20, width-22)
+	for i, entry := range m.isoEntries {
+		cursor := " "
+		if i == m.isoCursor {
+			cursor = ">"
+		}
+		kind := importSourceKind(entry)
+		name := entry.Name
+		if entry.Dir {
+			if name != ".." {
+				name += "/"
+			}
+		}
+		line := cursor + " " + cell(name, nameW) + " " + kind
+		if i == m.isoCursor {
+			line = s.selected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\nEnter/right opens a directory or selects a VM source. Left/backspace goes up. Esc returns.")
 	return s.pane.Width(max(54, width-4)).Height(max(3, height-2)).Render(fitLines(strings.TrimRight(b.String(), "\n"), width-6, height-4))
 }
 
@@ -3207,8 +3335,10 @@ func (m Model) helpText() string {
 		case modeCreateVM:
 			return "up/down: fields  left/right: presets  enter: next/browse/create  tab: next  esc: cancel"
 		case modeImportVBox:
-			return "up/down: fields  left/right: presets  enter: next/import  tab: next  esc: cancel"
+			return "up/down: fields  left/right: presets  enter: browse/next/import  tab: next  esc: cancel"
 		case modeISOPicker:
+			return "up/down: browse  enter/right: open/select  left/backspace: parent  esc: form"
+		case modeImportSourcePicker:
 			return "up/down: browse  enter/right: open/select  left/backspace: parent  esc: form"
 		case modeAddDisk:
 			return "tab: switch field  enter: next/save  esc: cancel  q: quit"
@@ -4106,6 +4236,44 @@ done || true
 	return parseRemoteISOEntries(out), out, nil
 }
 
+func listRemoteImportSourceEntries(h Host, dir string) ([]remoteEntry, string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = strings.TrimRight(defaultCreateVMISOPath, "/")
+	}
+	if !strings.HasPrefix(dir, "/") && dir != "~" && !strings.HasPrefix(dir, "~/") {
+		return nil, "", fmt.Errorf("directory must be an absolute remote path or start with ~/")
+	}
+	script := fmt.Sprintf(`
+set -euo pipefail
+input=%s
+case "$input" in
+  "~") dir="$HOME" ;;
+  "~/"*) dir="$HOME/${input#\~/}" ;;
+  /*) dir="$input" ;;
+  *) echo "Directory must be absolute or start with ~/: $input" >&2; exit 1 ;;
+esac
+if [ "$dir" != "/" ]; then dir="${dir%%/}"; fi
+if [ ! -d "$dir" ] && { [ "$input" = "~/Documents" ] || [ "$input" = "~/Documents/" ]; }; then
+  dir="$HOME"
+fi
+[ -d "$dir" ] || { echo "Directory does not exist: $dir" >&2; exit 1; }
+dir="$(cd "$dir" && pwd -P)"
+printf 'VMRELAY_ISO_DIR\t%%s\n' "$dir"
+find "$dir" -maxdepth 1 -mindepth 1 \( -type d -o -type f \) -printf '%%f\t%%y\t%%p\n' 2>/dev/null | sort -f | while IFS="$(printf '\t')" read -r name type path; do
+  case "$type:$name" in
+    d:*) printf 'VMRELAY_IMPORT_ENTRY\t%%s\tdir\t%%s\n' "$name" "$path" ;;
+    f:*.[vV][bB][oO][xX]|f:*.[vV][dD][iI]|f:*.[vV][mM][dD][kK]|f:*.[vV][mM][xX]) printf 'VMRELAY_IMPORT_ENTRY\t%%s\tfile\t%%s\n' "$name" "$path" ;;
+  esac
+done || true
+`, shellQuote(dir))
+	out, err := ssh(h.Target, script, 20*time.Second)
+	if err != nil {
+		return nil, out, err
+	}
+	return parseRemoteImportSourceEntries(out), out, nil
+}
+
 func isoDirFromOutput(out string) string {
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Split(line, "\t")
@@ -4135,6 +4303,45 @@ func parseRemoteISOEntries(out string) []remoteEntry {
 		entries = append([]remoteEntry{{Name: "..", Path: parent, Dir: true}}, entries...)
 	}
 	return entries
+}
+
+func parseRemoteImportSourceEntries(out string) []remoteEntry {
+	var entries []remoteEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 4 || parts[0] != "VMRELAY_IMPORT_ENTRY" {
+			continue
+		}
+		entries = append(entries, remoteEntry{Name: parts[1], Dir: parts[2] == "dir", Path: parts[3]})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Dir != entries[j].Dir {
+			return entries[i].Dir
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	if parent := parentDirFromOutput(out); parent != "" {
+		entries = append([]remoteEntry{{Name: "..", Path: parent, Dir: true}}, entries...)
+	}
+	return entries
+}
+
+func importSourceKind(entry remoteEntry) string {
+	if entry.Dir {
+		return "dir"
+	}
+	switch strings.ToLower(filepath.Ext(entry.Name)) {
+	case ".vbox":
+		return "vbox"
+	case ".vdi":
+		return "vdi"
+	case ".vmdk":
+		return "vmdk"
+	case ".vmx":
+		return "vmx"
+	default:
+		return "file"
+	}
 }
 
 func parentDirFromOutput(out string) string {
@@ -4531,17 +4738,18 @@ case "$vbox" in
   "~") vbox="$HOME" ;;
   "~/"*) vbox="$HOME/${vbox#\~/}" ;;
   /*) ;;
-  *) echo ".vbox path must be absolute or start with ~/: $vbox" >&2; exit 1 ;;
+  *) echo "Import source path must be absolute or start with ~/: $vbox" >&2; exit 1 ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to parse VirtualBox .vbox files." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to parse VM import sources." >&2; exit 1; }
 command -v qemu-img >/dev/null 2>&1 || { echo "qemu-img is missing; run setup for this host." >&2; exit 1; }
 command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
-[ -e "$vbox" ] || { echo ".vbox file does not exist: $vbox" >&2; exit 1; }
-[ -r "$vbox" ] || { echo ".vbox file is not readable by $(whoami): $vbox" >&2; exit 1; }
+[ -e "$vbox" ] || { echo "Import source does not exist: $vbox" >&2; exit 1; }
+[ -r "$vbox" ] || { echo "Import source is not readable by $(whoami): $vbox" >&2; exit 1; }
 
 plan="$(python3 - "$vbox" "$name_override" <<'PY'
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -4563,71 +4771,118 @@ def first(parent, name):
 def clean(value):
     value = "" if value is None else str(value)
     if "\t" in value or "\n" in value or "\r" in value:
-        raise SystemExit("VirtualBox metadata contains unsupported control whitespace.")
+        raise SystemExit("VM import metadata contains unsupported control whitespace.")
     return value
 
-root = ET.parse(vbox_path).getroot()
-machine = root if local(root.tag) == "Machine" else first(root, "Machine")
-if machine is None:
-    raise SystemExit("Could not find a Machine element in the .vbox file.")
+def resolve_paths(base_path, locations):
+    base_dir = os.path.dirname(os.path.abspath(base_path))
+    resolved = []
+    for location in locations:
+        location = os.path.expanduser(location)
+        if not os.path.isabs(location):
+            location = os.path.abspath(os.path.join(base_dir, location))
+        if location not in resolved:
+            resolved.append(location)
+    return resolved
 
-vm_name = name_override or machine.get("name") or os.path.splitext(os.path.basename(vbox_path))[0]
-memory_el = first(machine, "Memory")
-cpu_el = first(machine, "CPU")
-memory = int(memory_el.get("RAMSize", "4096")) if memory_el is not None else 4096
-cpus = int(cpu_el.get("count", "2")) if cpu_el is not None else 2
+def parse_vbox(path):
+    root = ET.parse(path).getroot()
+    machine = root if local(root.tag) == "Machine" else first(root, "Machine")
+    if machine is None:
+        raise SystemExit("Could not find a Machine element in the .vbox file.")
 
-firmware = "bios"
-for el in elements(machine, "Firmware"):
-    attrs = " ".join(str(v) for v in el.attrib.values()).lower()
-    if "efi" in attrs:
-        firmware = "uefi"
-        break
-for key, value in machine.attrib.items():
-    if "firmware" in key.lower() and "efi" in value.lower():
-        firmware = "uefi"
+    vm_name = name_override or machine.get("name") or os.path.splitext(os.path.basename(path))[0]
+    memory_el = first(machine, "Memory")
+    cpu_el = first(machine, "CPU")
+    memory = int(memory_el.get("RAMSize", "4096")) if memory_el is not None else 4096
+    cpus = int(cpu_el.get("count", "2")) if cpu_el is not None else 2
 
-media = {}
-for disk in elements(machine, "HardDisk"):
-    uuid = disk.get("uuid")
-    location = disk.get("location")
-    if uuid and location:
-        media[uuid.strip("{}").lower()] = location
+    firmware = "bios"
+    for el in elements(machine, "Firmware"):
+        attrs = " ".join(str(v) for v in el.attrib.values()).lower()
+        if "efi" in attrs:
+            firmware = "uefi"
+            break
+    for key, value in machine.attrib.items():
+        if "firmware" in key.lower() and "efi" in value.lower():
+            firmware = "uefi"
 
-attached = []
-for index, dev in enumerate(elements(machine, "AttachedDevice")):
-    if dev.get("type") != "HardDisk":
-        continue
-    image = first(dev, "Image")
-    uuid = image.get("uuid") if image is not None else ""
-    location = media.get(uuid.strip("{}").lower())
-    if location:
-        try:
-            port = int(dev.get("port", "0"))
-        except ValueError:
-            port = 0
-        try:
-            device = int(dev.get("device", "0"))
-        except ValueError:
-            device = 0
-        attached.append((port, device, index, location))
+    media = {}
+    for disk in elements(machine, "HardDisk"):
+        uuid = disk.get("uuid")
+        location = disk.get("location")
+        if uuid and location:
+            media[uuid.strip("{}").lower()] = location
 
-if attached:
-    disk_locations = [item[3] for item in sorted(attached)]
+    attached = []
+    for index, dev in enumerate(elements(machine, "AttachedDevice")):
+        if dev.get("type") != "HardDisk":
+            continue
+        image = first(dev, "Image")
+        uuid = image.get("uuid") if image is not None else ""
+        location = media.get(uuid.strip("{}").lower())
+        if location:
+            try:
+                port = int(dev.get("port", "0"))
+            except ValueError:
+                port = 0
+            try:
+                device = int(dev.get("device", "0"))
+            except ValueError:
+                device = 0
+            attached.append((port, device, index, location))
+
+    disk_locations = [item[3] for item in sorted(attached)] if attached else list(media.values())
+    if not disk_locations:
+        raise SystemExit("No attached VirtualBox hard disks were found in the .vbox file.")
+    return vm_name, memory, cpus, firmware, resolve_paths(path, disk_locations)
+
+def parse_vmx(path):
+    values = {}
+    pattern = re.compile(r'^\s*([^#][^=]*?)\s*=\s*"(.*)"\s*$')
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            match = pattern.match(line)
+            if match:
+                values[match.group(1).strip().lower()] = match.group(2)
+    vm_name = name_override or values.get("displayname") or os.path.splitext(os.path.basename(path))[0]
+    try:
+        memory = int(values.get("memsize", "4096"))
+    except ValueError:
+        memory = 4096
+    try:
+        cpus = int(values.get("numvcpus") or values.get("cpuid.corespersocket") or "2")
+    except ValueError:
+        cpus = 2
+    firmware = "uefi" if values.get("firmware", "").lower() == "efi" else "bios"
+    disks = []
+    disk_exts = (".vmdk", ".vdi", ".qcow2", ".img")
+    for key, value in values.items():
+        if not key.endswith(".filename"):
+            continue
+        lower_value = value.lower()
+        if lower_value in ("auto detect", "empty") or lower_value.startswith("/dev/"):
+            continue
+        if not lower_value.endswith(disk_exts):
+            continue
+        disks.append(value)
+    if not disks:
+        raise SystemExit("No attached VMware hard disks were found in the .vmx file.")
+    return vm_name, memory, cpus, firmware, resolve_paths(path, disks)
+
+def parse_disk(path):
+    vm_name = name_override or os.path.splitext(os.path.basename(path))[0]
+    return vm_name, 4096, 2, "bios", [os.path.abspath(path)]
+
+ext = os.path.splitext(vbox_path)[1].lower()
+if ext == ".vbox":
+    vm_name, memory, cpus, firmware, resolved = parse_vbox(vbox_path)
+elif ext == ".vmx":
+    vm_name, memory, cpus, firmware, resolved = parse_vmx(vbox_path)
+elif ext in (".vdi", ".vmdk"):
+    vm_name, memory, cpus, firmware, resolved = parse_disk(vbox_path)
 else:
-    disk_locations = list(media.values())
-
-if not disk_locations:
-    raise SystemExit("No attached VirtualBox hard disks were found in the .vbox file.")
-
-base_dir = os.path.dirname(os.path.abspath(vbox_path))
-resolved = []
-for location in disk_locations:
-    location = os.path.expanduser(location)
-    if not os.path.isabs(location):
-        location = os.path.abspath(os.path.join(base_dir, location))
-    if location not in resolved:
-        resolved.append(location)
+    raise SystemExit("Import source must be a .vbox, .vdi, .vmdk, or .vmx file.")
 
 print("\t".join(["VMRELAY_VBOX_VM", clean(vm_name), str(memory), str(cpus), firmware]))
 for disk in resolved:
@@ -4658,11 +4913,11 @@ valid_vm_name() {
   [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]] && [ "${#1}" -le 80 ]
 }
 
-[ -n "$vm_name" ] || { echo "VirtualBox VM name is empty; provide a new VM name." >&2; exit 1; }
-valid_vm_name "$vm_name" || { echo "VirtualBox VM name is not a valid VMRelay/libvirt name: ${vm_name}. Provide a new VM name using letters, numbers, dot, dash, or underscore." >&2; exit 1; }
-[[ "$memory_mib" =~ ^[0-9]+$ ]] && [ "$memory_mib" -ge 128 ] && [ "$memory_mib" -le 1048576 ] || { echo "Invalid RAM size parsed from .vbox: ${memory_mib} MiB" >&2; exit 1; }
-[[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -ge 1 ] && [ "$cpus" -le 256 ] || { echo "Invalid CPU count parsed from .vbox: ${cpus}" >&2; exit 1; }
-case "$firmware" in bios|uefi) ;; *) echo "Invalid firmware parsed from .vbox: ${firmware}" >&2; exit 1 ;; esac
+[ -n "$vm_name" ] || { echo "Imported VM name is empty; provide a new VM name." >&2; exit 1; }
+valid_vm_name "$vm_name" || { echo "Imported VM name is not a valid VMRelay/libvirt name: ${vm_name}. Provide a new VM name using letters, numbers, dot, dash, or underscore." >&2; exit 1; }
+[[ "$memory_mib" =~ ^[0-9]+$ ]] && [ "$memory_mib" -ge 128 ] && [ "$memory_mib" -le 1048576 ] || { echo "Invalid RAM size parsed from import source: ${memory_mib} MiB" >&2; exit 1; }
+[[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -ge 1 ] && [ "$cpus" -le 256 ] || { echo "Invalid CPU count parsed from import source: ${cpus}" >&2; exit 1; }
+case "$firmware" in bios|uefi) ;; *) echo "Invalid firmware parsed from import source: ${firmware}" >&2; exit 1 ;; esac
 case "$disk_bus" in sata|virtio|scsi|ide) ;; *) echo "Unsupported disk bus: ${disk_bus}" >&2; exit 1 ;; esac
 [ "${#disk_sources[@]}" -gt 0 ] || { echo "No hard disks were parsed from ${vbox}." >&2; exit 1; }
 
@@ -4874,7 +5129,7 @@ else
 fi
 rm -f "$tmp"
 
-echo "Imported VirtualBox VM ${vm_name} with ${memory_mib} MiB RAM, ${cpus} CPU(s), ${firmware} firmware, and ${#converted_disks[@]} converted disk(s) in ${storage_pool}."
+echo "Imported VM ${vm_name} with ${memory_mib} MiB RAM, ${cpus} CPU(s), ${firmware} firmware, and ${#converted_disks[@]} converted disk(s) in ${storage_pool}."
 echo "Networking was replaced with libvirt NAT network ${network}; VNC graphics and USB tablet input were added."
 [ -z "$policy_note" ] || echo "$policy_note"
 `, shellQuote(req.VBoxPath), shellQuote(req.Name), shellQuote(req.DiskBus), shellQuote(req.Network), shellQuote(sharedValue))

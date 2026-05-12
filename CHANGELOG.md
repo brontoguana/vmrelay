@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.45 - 2026-05-12
+
+- Added a remote import-source browser to the VM import form. Press Enter on the Source field to traverse directories and choose `.vbox`, `.vdi`, `.vmdk`, or `.vmx` files.
+- Extended VM import sources beyond `.vbox`: `.vmx` files are parsed for VM name, RAM, CPU count, firmware, and attached disks, while bare `.vdi`/`.vmdk` files import as disk-only VMs with conservative defaults unless the user overrides the name.
+
 ## 0.2.44 - 2026-05-12
 
 - Added a setup prompt after adding a host, so users can immediately run host setup from the restored terminal.

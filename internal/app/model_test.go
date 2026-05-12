@@ -1149,7 +1149,7 @@ func TestImportVBoxFormAndValidation(t *testing.T) {
 		importVBoxShared:  "yes",
 	}
 	view := stripANSI(m.viewImportVBox(110, 22))
-	for _, want := range []string{"Import VirtualBox VM on iron", "Win10.vbox", "Disk bus", "VMRelay NAT", "converted to qcow2"} {
+	for _, want := range []string{"Import VM on iron", "Win10.vbox", "Disk bus", "VMRelay NAT", "converted to qcow2"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("VirtualBox import form missing %q:\n%s", want, view)
 		}
@@ -1175,9 +1175,17 @@ func TestImportVBoxFormAndValidation(t *testing.T) {
 	if _, err := m.pendingVBoxImport(); err == nil {
 		t.Fatal("expected relative .vbox path to fail")
 	}
+	m.importVBoxPath = "~/Documents/Win10/Win10.vdi"
+	if _, err := m.pendingVBoxImport(); err != nil {
+		t.Fatalf("expected .vdi disk source to be accepted: %v", err)
+	}
+	m.importVBoxPath = "~/Documents/Win10/Win10.vmx"
+	if _, err := m.pendingVBoxImport(); err != nil {
+		t.Fatalf("expected .vmx source to be accepted: %v", err)
+	}
 	m.importVBoxPath = "~/Documents/Win10/Win10.xml"
 	if _, err := m.pendingVBoxImport(); err == nil {
-		t.Fatal("expected non-.vbox path to fail")
+		t.Fatal("expected unsupported import source path to fail")
 	}
 }
 
@@ -1198,6 +1206,60 @@ func TestHostImportVBoxShortcut(t *testing.T) {
 	}
 }
 
+func TestEnterOnImportSourceFieldStartsRemotePicker(t *testing.T) {
+	m := Model{
+		config:            Config{Theme: "Classic"},
+		mode:              modeImportVBox,
+		activeHost:        Host{Name: "iron", Target: "simplehelp@iron.simplehelp.io"},
+		importVBoxPath:    "~/Documents/",
+		importVBoxDiskBus: "sata",
+		importVBoxNetwork: "default",
+		importVBoxShared:  "no",
+	}
+	m.importVBoxField = importVBoxFieldPath
+	updated, cmd := m.updateImportVBoxKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on import source field should start remote directory loading")
+	}
+	next := updated.(Model)
+	if next.mode != modeBusy || next.priorMode != modeImportSourcePicker || next.isoDir != "~/Documents" {
+		t.Fatalf("unexpected state after opening import source picker: %#v", next)
+	}
+}
+
+func TestImportSourcePickerSelectsVMSource(t *testing.T) {
+	out := strings.Join([]string{
+		"VMRELAY_ISO_DIR\t/home/simplehelp/Documents",
+		"VMRELAY_IMPORT_ENTRY\tWin10.vdi\tfile\t/home/simplehelp/Documents/Win10.vdi",
+		"VMRELAY_IMPORT_ENTRY\tWin11.vmx\tfile\t/home/simplehelp/Documents/Win11.vmx",
+		"VMRELAY_IMPORT_ENTRY\told\tdir\t/home/simplehelp/Documents/old",
+	}, "\n")
+	entries := parseRemoteImportSourceEntries(out)
+	if len(entries) != 4 {
+		t.Fatalf("unexpected import source entry count: %#v", entries)
+	}
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeImportSourcePicker,
+		activeHost: Host{Name: "iron"},
+		isoDir:     "/home/simplehelp/Documents",
+		isoEntries: entries,
+		isoCursor:  2,
+	}
+	view := stripANSI(m.viewImportSourcePicker(100, 20))
+	if !strings.Contains(view, "Select VM Import Source on iron") || !strings.Contains(view, "Win10.vdi") || !strings.Contains(view, "vmx") {
+		t.Fatalf("import source picker missing expected entries:\n%s", view)
+	}
+	updated, cmd := m.updateImportSourcePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("selecting an import source should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeImportVBox || next.importVBoxPath != "/home/simplehelp/Documents/Win10.vdi" {
+		t.Fatalf("import source selection did not return to import form: %#v", next)
+	}
+}
+
 func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
 	script := importVirtualBoxVMScript(vboxImportRequest{
 		VBoxPath: "~/Documents/Win10/Win10.vbox",
@@ -1210,6 +1272,8 @@ func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
 		`python3 - "$vbox" "$name_override"`,
 		`VMRELAY_VBOX_VM`,
 		`VMRELAY_VBOX_DISK`,
+		`elif ext in (".vdi", ".vmdk"):`,
+		`elif ext == ".vmx":`,
 		`qemu-img convert -p -f "$format" -O qcow2 "$source" "$dest"`,
 		`--network "network=${network},model=e1000e"`,
 		`--graphics vnc,listen=127.0.0.1`,
