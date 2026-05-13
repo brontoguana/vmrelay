@@ -4470,8 +4470,8 @@ esac
 command -v virt-install >/dev/null 2>&1 || { echo "virt-install is missing; run setup for this host." >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to set installer boot order." >&2; exit 1; }
 virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 && { echo "VM already exists: $name" >&2; exit 1; }
-virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
-net_active="$(virsh -c qemu:///system net-info "$network" 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+net_info="$(virsh -c qemu:///system net-info "$network" 2>/dev/null)" || { echo "Libvirt network not found: $network" >&2; exit 1; }
+net_active="$(awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$net_info")"
 if [ "$net_active" != "yes" ]; then
   if ! virsh -c qemu:///system net-start "$network" >/dev/null 2>&1; then
     echo "Libvirt network is not active: ${network}. Run host setup so VMRelay can start the NAT network." >&2
@@ -4486,7 +4486,8 @@ if [ "$firmware" = "uefi" ]; then
     exit 1
   fi
   command -v swtpm >/dev/null 2>&1 || { echo "swtpm is required for UEFI/Secure Boot VM creation. Run host setup or install swtpm." >&2; exit 1; }
-  if ! virsh -c qemu:///system domcapabilities --machine q35 2>/dev/null | awk '/<loader / { in_loader=1 } in_loader && /<value>.*OVMF.*(ms|secboot).*<\/value>/ { has_loader=1 } in_loader && /<value>yes<\/value>/ { has_secure=1 } /<\/loader>/ { in_loader=0 } END { exit(has_loader && has_secure ? 0 : 1) }'; then
+  caps="$(virsh -c qemu:///system domcapabilities --machine q35 2>/dev/null || true)"
+  if ! awk '/<loader / { in_loader=1 } in_loader && /<value>.*OVMF.*(ms|secboot).*<\/value>/ { has_loader=1 } in_loader && /<value>yes<\/value>/ { has_secure=1 } /<\/loader>/ { in_loader=0 } END { exit(has_loader && has_secure ? 0 : 1) }' <<<"$caps"; then
     echo "Secure Boot-capable OVMF for Q35 is missing. Run host setup or install OVMF Secure Boot firmware." >&2
     exit 1
   fi
@@ -4502,7 +4503,10 @@ pool_target() {
 }
 
 pool_running() {
-  virsh -c qemu:///system pool-info "$1" 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' | grep -qx running
+  local info state
+  info="$(virsh -c qemu:///system pool-info "$1" 2>/dev/null || true)"
+  state="$(awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$info")"
+  [ "$state" = "running" ]
 }
 
 select_pool() {
@@ -4520,7 +4524,12 @@ select_pool() {
       return 0
     fi
   done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
-  first="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
+  first=""
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    first="$candidate"
+    break
+  done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
   [ -n "$first" ] || { echo "No running libvirt storage pool found for VM disk creation. Run host setup so VMRelay can initialize /var/lib/vmrelay/images." >&2; return 1; }
   printf '%%s\n' "$first"
 }
@@ -4567,7 +4576,8 @@ stage_iso() {
       return 1
     fi
   fi
-  virsh -c qemu:///system vol-path --pool "$storage_pool" "$iso_vol" | awk 'NF { print; exit }'
+  vol_path="$(virsh -c qemu:///system vol-path --pool "$storage_pool" "$iso_vol" 2>/dev/null || true)"
+  awk 'NF { print; exit }' <<<"$vol_path"
 }
 
 install_iso="$(stage_iso "$iso")"
@@ -4935,8 +4945,8 @@ case "$disk_bus" in sata|virtio|scsi|ide) ;; *) echo "Unsupported disk bus: ${di
 [ "${#disk_sources[@]}" -gt 0 ] || { echo "No hard disks were parsed from ${vbox}." >&2; exit 1; }
 
 virsh -c qemu:///system dominfo "$vm_name" >/dev/null 2>&1 && { echo "VM already exists: $vm_name" >&2; exit 1; }
-virsh -c qemu:///system net-info "$network" >/dev/null 2>&1 || { echo "Libvirt network not found: $network" >&2; exit 1; }
-net_active="$(virsh -c qemu:///system net-info "$network" 2>/dev/null | awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+net_info="$(virsh -c qemu:///system net-info "$network" 2>/dev/null)" || { echo "Libvirt network not found: $network" >&2; exit 1; }
+net_active="$(awk -F: '$1 == "Active" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$net_info")"
 if [ "$net_active" != "yes" ]; then
   if ! virsh -c qemu:///system net-start "$network" >/dev/null 2>&1; then
     echo "Libvirt network is not active: ${network}. Run host setup so VMRelay can start the NAT network." >&2
@@ -4958,7 +4968,10 @@ pool_target() {
 }
 
 pool_running() {
-  virsh -c qemu:///system pool-info "$1" 2>/dev/null | awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' | grep -qx running
+  local info state
+  info="$(virsh -c qemu:///system pool-info "$1" 2>/dev/null || true)"
+  state="$(awk -F: '$1 == "State" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$info")"
+  [ "$state" = "running" ]
 }
 
 select_pool() {
@@ -4976,7 +4989,12 @@ select_pool() {
       return 0
     fi
   done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
-  first="$(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null | awk 'NF { print; exit }')"
+  first=""
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    first="$candidate"
+    break
+  done < <(virsh -c qemu:///system pool-list --name --state-running 2>/dev/null)
   [ -n "$first" ] || { echo "No running libvirt storage pool found for VirtualBox import. Run host setup so VMRelay can initialize /var/lib/vmrelay/images." >&2; return 1; }
   printf '%%s\n' "$first"
 }
@@ -5015,7 +5033,8 @@ for source in "${disk_sources[@]}"; do
   index=$((index + 1))
   [ -e "$source" ] || { echo "VirtualBox disk does not exist: $source" >&2; exit 1; }
   [ -r "$source" ] || { echo "VirtualBox disk is not readable by $(whoami): $source" >&2; exit 1; }
-  format="$(qemu-img info "$source" 2>/dev/null | awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+  qemu_info="$(qemu-img info "$source" 2>/dev/null || true)"
+  format="$(awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$qemu_info")"
   [ -n "$format" ] || { echo "Could not detect source disk format with qemu-img: $source" >&2; exit 1; }
   disk_vol="${safe}-disk${index}.qcow2"
   if virsh -c qemu:///system vol-info --pool "$storage_pool" "$disk_vol" >/dev/null 2>&1; then
@@ -5218,7 +5237,8 @@ if [ -z "$dest" ]; then
   dest="/var/lib/libvirt/images/${safe}-${target}.qcow2"
 fi
 case "$dest" in /*) ;; *) echo "Destination path must be absolute: $dest" >&2; exit 1 ;; esac
-format="$(qemu-img info "$source" 2>/dev/null | awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+qemu_info="$(qemu-img info "$source" 2>/dev/null || true)"
+format="$(awk -F: '$1 == "file format" { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<<"$qemu_info")"
 [ -n "$format" ] || { echo "Could not detect source format with qemu-img: $source" >&2; exit 1; }
 if [ "$format" = "qcow2" ] && [ "$source" = "$dest" ]; then
   echo "Using existing qcow2 source without conversion."

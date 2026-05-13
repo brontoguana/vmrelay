@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.48 - 2026-05-13
+
+- Fixed VM import still reporting `exit status 141` on hosts where `virsh net-info` or `virsh pool-info` trips `pipefail` after an early-exit parser. VM import and matching VM creation paths now capture command output before parsing network, pool, and disk-format details.
+
 ## 0.2.47 - 2026-05-13
 
 - Fixed VM import reporting `exit status 141` while selecting the libvirt storage pool by removing a SIGPIPE-prone `sed | head` lookup from the import storage target detection. VM creation now uses the same safer storage-pool path parsing.

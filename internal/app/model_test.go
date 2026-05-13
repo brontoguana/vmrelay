@@ -1291,6 +1291,9 @@ func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`pool-dumpxml "$1" 2>/dev/null | sed`,
+		`net-info "$network" 2>/dev/null | awk`,
+		`pool-info "$1" 2>/dev/null | awk`,
+		`qemu-img info "$source" 2>/dev/null | awk`,
 		`| head -n 1`,
 	} {
 		if strings.Contains(script, bad) {
@@ -1339,7 +1342,12 @@ scsi0:0.fileName = "Windows 10 AccessD.vmdk"
 	writeFake("sudo", "#!/usr/bin/env bash\nexit 1\n")
 	writeFake("qemu-img", `#!/usr/bin/env bash
 case "$1" in
-  info) echo "file format: vmdk" ;;
+  info)
+    echo "file format: vmdk"
+    for i in $(seq 1 20000); do
+      echo "extra: $i"
+    done
+    ;;
   convert) touch "${@: -1}" ;;
   *) exit 2 ;;
 esac
@@ -1360,8 +1368,18 @@ XML
 cmd="$3"
 case "$cmd" in
   dominfo) exit 1 ;;
-  net-info) echo "Active: yes" ;;
-  pool-info) echo "State: running" ;;
+  net-info)
+    echo "Active: yes"
+    for i in $(seq 1 20000); do
+      echo "extra: $i"
+    done
+    ;;
+  pool-info)
+    echo "State: running"
+    for i in $(seq 1 20000); do
+      echo "extra: $i"
+    done
+    ;;
   pool-dumpxml)
     for i in $(seq 1 20000); do
       printf '<pool><target><path>%s</path></target></pool>\n' "$VMRELAY_TEST_STORAGE"
