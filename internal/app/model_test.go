@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -1295,6 +1296,96 @@ func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
 	}
 	if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
 		t.Fatalf("VirtualBox import script failed bash -n: %v\n%s\n%s", err, out, script)
+	}
+}
+
+func TestImportVirtualBoxScriptSanitizesParsedVMName(t *testing.T) {
+	tmp := t.TempDir()
+	storage := filepath.Join(tmp, "storage")
+	sourceDir := filepath.Join(tmp, "source")
+	binDir := filepath.Join(tmp, "bin")
+	for _, dir := range []string{storage, sourceDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	vmxPath := filepath.Join(sourceDir, "Windows 10 AccessD.vmx")
+	diskPath := filepath.Join(sourceDir, "Windows 10 AccessD.vmdk")
+	if err := os.WriteFile(vmxPath, []byte(`displayName = "Windows 10 AccessD"
+memsize = "2048"
+numvcpus = "2"
+scsi0:0.fileName = "Windows 10 AccessD.vmdk"
+`), 0o644); err != nil {
+		t.Fatalf("write vmx: %v", err)
+	}
+	if err := os.WriteFile(diskPath, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	writeFake := func(name, body string) {
+		t.Helper()
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	writeFake("sudo", "#!/usr/bin/env bash\nexit 1\n")
+	writeFake("qemu-img", `#!/usr/bin/env bash
+case "$1" in
+  info) echo "file format: vmdk" ;;
+  convert) touch "${@: -1}" ;;
+  *) exit 2 ;;
+esac
+`)
+	writeFake("virt-install", `#!/usr/bin/env bash
+cat <<'XML'
+<domain type="kvm">
+  <name>placeholder</name>
+  <os><type arch="x86_64">hvm</type><boot dev="hd"/></os>
+  <devices>
+    <disk type="file" device="disk"><target dev="sda" bus="sata"/></disk>
+    <interface type="network"><source network="default"/></interface>
+  </devices>
+</domain>
+XML
+`)
+	writeFake("virsh", `#!/usr/bin/env bash
+cmd="$3"
+case "$cmd" in
+  dominfo) exit 1 ;;
+  net-info) echo "Active: yes" ;;
+  pool-info) echo "State: running" ;;
+  pool-dumpxml) printf '<pool><target><path>%s</path></target></pool>\n' "$VMRELAY_TEST_STORAGE" ;;
+  vol-info) exit 1 ;;
+  define) exit 0 ;;
+  domuuid) echo "11111111-2222-3333-4444-555555555555" ;;
+  *) exit 0 ;;
+esac
+`)
+
+	script := importVirtualBoxVMScript(vboxImportRequest{
+		VBoxPath: vmxPath,
+		DiskBus:  "sata",
+		Network:  "default",
+	})
+	scriptPath := filepath.Join(tmp, "import.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"VMRELAY_TEST_STORAGE="+storage,
+		"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("import script failed: %v\n%s\n%s", err, out, script)
+	}
+	if !strings.Contains(string(out), "Imported VM Windows-10-AccessD") {
+		t.Fatalf("expected sanitized imported VM name in output, got:\n%s", out)
+	}
+	if matches, err := filepath.Glob(filepath.Join(storage, "Windows-10-AccessD-*-disk1.qcow2")); err != nil || len(matches) != 1 {
+		t.Fatalf("expected one converted disk with sanitized prefix, matches=%v err=%v", matches, err)
 	}
 }
 

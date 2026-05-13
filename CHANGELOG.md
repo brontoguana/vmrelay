@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.46 - 2026-05-13
+
+- Fixed VM import names parsed from `.vbox`, `.vmx`, `.vdi`, and `.vmdk` sources so spaces and other invalid separator characters are converted to dashes before libvirt validation. For example, `Windows 10 AccessD` now imports as `Windows-10-AccessD` unless the user provides an explicit new name.
+
 ## 0.2.45 - 2026-05-12
 
 - Added a remote import-source browser to the VM import form. Press Enter on the Source field to traverse directories and choose `.vbox`, `.vdi`, `.vmdk`, or `.vmx` files.

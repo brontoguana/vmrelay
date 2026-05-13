@@ -4774,6 +4774,12 @@ def clean(value):
         raise SystemExit("VM import metadata contains unsupported control whitespace.")
     return value
 
+def sanitize_imported_vm_name(value):
+    value = "" if value is None else str(value).strip()
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value[:80].rstrip("-")
+
 def resolve_paths(base_path, locations):
     base_dir = os.path.dirname(os.path.abspath(base_path))
     resolved = []
@@ -4883,6 +4889,8 @@ elif ext in (".vdi", ".vmdk"):
     vm_name, memory, cpus, firmware, resolved = parse_disk(vbox_path)
 else:
     raise SystemExit("Import source must be a .vbox, .vdi, .vmdk, or .vmx file.")
+if not name_override:
+    vm_name = sanitize_imported_vm_name(vm_name)
 
 print("\t".join(["VMRELAY_VBOX_VM", clean(vm_name), str(memory), str(cpus), firmware]))
 for disk in resolved:
