@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.47 - 2026-05-13
+
+- Fixed VM import reporting `exit status 141` while selecting the libvirt storage pool by removing a SIGPIPE-prone `sed | head` lookup from the import storage target detection. VM creation now uses the same safer storage-pool path parsing.
+
 ## 0.2.46 - 2026-05-13
 
 - Fixed VM import names parsed from `.vbox`, `.vmx`, `.vdi`, and `.vmdk` sources so spaces and other invalid separator characters are converted to dashes before libvirt validation. For example, `Windows 10 AccessD` now imports as `Windows-10-AccessD` unless the user provides an explicit new name.

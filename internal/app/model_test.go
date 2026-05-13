@@ -1289,6 +1289,14 @@ func TestImportVirtualBoxScriptConvertsAndOverridesNetworking(t *testing.T) {
 	if strings.Contains(script, "attach-disk") {
 		t.Fatalf("VirtualBox import should define a new VM, not attach to an existing VM:\n%s", script)
 	}
+	for _, bad := range []string{
+		`pool-dumpxml "$1" 2>/dev/null | sed`,
+		`| head -n 1`,
+	} {
+		if strings.Contains(script, bad) {
+			t.Fatalf("VirtualBox import script contains SIGPIPE-prone lookup %q:\n%s", bad, script)
+		}
+	}
 
 	path := t.TempDir() + "/import-vbox.sh"
 	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
@@ -1354,7 +1362,11 @@ case "$cmd" in
   dominfo) exit 1 ;;
   net-info) echo "Active: yes" ;;
   pool-info) echo "State: running" ;;
-  pool-dumpxml) printf '<pool><target><path>%s</path></target></pool>\n' "$VMRELAY_TEST_STORAGE" ;;
+  pool-dumpxml)
+    for i in $(seq 1 20000); do
+      printf '<pool><target><path>%s</path></target></pool>\n' "$VMRELAY_TEST_STORAGE"
+    done
+    ;;
   vol-info) exit 1 ;;
   define) exit 0 ;;
   domuuid) echo "11111111-2222-3333-4444-555555555555" ;;

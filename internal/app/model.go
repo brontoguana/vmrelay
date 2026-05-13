@@ -4493,7 +4493,12 @@ if [ "$firmware" = "uefi" ]; then
 fi
 
 pool_target() {
-  virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1
+  local xml path
+  xml="$(virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null || true)"
+  path="${xml#*<path>}"
+  [ "$path" != "$xml" ] || return 0
+  path="${path%%%%</path>*}"
+  printf '%%s\n' "$path"
 }
 
 pool_running() {
@@ -4944,7 +4949,12 @@ if [ "$firmware" = "uefi" ] && [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/ovm
 fi
 
 pool_target() {
-  virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -n 1
+  local xml path
+  xml="$(virsh -c qemu:///system pool-dumpxml "$1" 2>/dev/null || true)"
+  path="${xml#*<path>}"
+  [ "$path" != "$xml" ] || return 0
+  path="${path%%%%</path>*}"
+  printf '%%s\n' "$path"
 }
 
 pool_running() {
