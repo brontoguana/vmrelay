@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.49 - 2026-05-14
+
+- Made the VM detail Actions tab scroll around the selected action when the action list is taller than the visible pane.
+- Added Actions tab flows to change a VM's persistent CPU count and RAM amount, with current CPU/RAM values shown in the action labels and forms.
+- Changed the VM Summary pane to display RAM in MB instead of raw KiB from libvirt.
 - Added the VMRelay TUI screenshot to the top of the README.
 - Shortened and reorganized the README, removing the legacy script section.
 

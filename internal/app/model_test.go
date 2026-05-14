@@ -806,10 +806,11 @@ func TestVMDetailRendersDiskAndNICTabs(t *testing.T) {
 
 func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 	m := Model{
-		config:     Config{Theme: "Classic"},
-		mode:       modeVMDetail,
-		activeHost: Host{Name: "iron"},
-		vmTab:      vmTabActions,
+		config:         Config{Theme: "Classic"},
+		mode:           modeVMDetail,
+		activeHost:     Host{Name: "iron"},
+		vmTab:          vmTabActions,
+		vmActionCursor: vmActionDuplicate,
 		vmDetail: VMDetail{
 			VM: VM{Name: "source-vm", State: "shut off"},
 		},
@@ -821,7 +822,6 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 	if !strings.Contains(m.helpText(), "up/down: choose") || strings.Contains(m.helpText(), "rename/duplicate") {
 		t.Fatalf("actions help should advertise duplicate: %q", m.helpText())
 	}
-	m.vmActionCursor = vmActionDuplicate
 	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("opening duplicate form should not start a command")
@@ -850,10 +850,11 @@ func TestVMActionsExposeDuplicateFlow(t *testing.T) {
 
 func TestVMActionsExposeRenameFlow(t *testing.T) {
 	m := Model{
-		config:     Config{Theme: "Classic"},
-		mode:       modeVMDetail,
-		activeHost: Host{Name: "iron"},
-		vmTab:      vmTabActions,
+		config:         Config{Theme: "Classic"},
+		mode:           modeVMDetail,
+		activeHost:     Host{Name: "iron"},
+		vmTab:          vmTabActions,
+		vmActionCursor: vmActionRename,
 		vmDetail: VMDetail{
 			VM: VM{Name: "source-vm", State: "shut off"},
 		},
@@ -865,7 +866,6 @@ func TestVMActionsExposeRenameFlow(t *testing.T) {
 	if !strings.Contains(m.helpText(), "enter: run") || strings.Contains(m.helpText(), "e/d") {
 		t.Fatalf("actions help should advertise rename: %q", m.helpText())
 	}
-	m.vmActionCursor = vmActionRename
 	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("opening rename form should not start a command")
@@ -957,6 +957,110 @@ func TestVMActionsUseArrowSelection(t *testing.T) {
 	next = updated.(Model)
 	if next.mode != modeVMDetail {
 		t.Fatalf("letter key should leave actions tab in detail mode, got %#v", next.mode)
+	}
+}
+
+func TestVMActionsScrollWithSelection(t *testing.T) {
+	m := Model{
+		config:         Config{Theme: "Classic"},
+		mode:           modeVMDetail,
+		activeHost:     Host{Name: "iron"},
+		vmTab:          vmTabActions,
+		vmActionCursor: vmActionRefresh,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "shut off"},
+		},
+	}
+	view := stripANSI(m.viewVMActions(80, 6))
+	if !strings.Contains(view, "> Reload detail") {
+		t.Fatalf("scrolled actions view should keep selected action visible:\n%s", view)
+	}
+	if strings.Contains(view, "Start VM") {
+		t.Fatalf("short scrolled actions view should not stay pinned to the top:\n%s", view)
+	}
+	m.vmActionCursor = vmActionPower
+	view = stripANSI(m.viewVMActions(80, 6))
+	if !strings.Contains(view, "> Start VM") {
+		t.Fatalf("top actions view should show selected first action:\n%s", view)
+	}
+}
+
+func TestVMActionsExposeResourceChangeFlows(t *testing.T) {
+	m := Model{
+		config:     Config{Theme: "Classic"},
+		mode:       modeVMDetail,
+		activeHost: Host{Name: "iron"},
+		vmTab:      vmTabActions,
+		vmDetail: VMDetail{
+			VM:     VM{Name: "source-vm", State: "shut off"},
+			CPUs:   "4",
+			Memory: "8388608 KiB",
+		},
+	}
+	view := stripANSI(m.viewVMDetail(100, 30))
+	if !strings.Contains(view, "Change CPUs (current: 4)") || !strings.Contains(view, "Change RAM (current: 8192 MB)") {
+		t.Fatalf("actions tab should expose current resource settings:\n%s", view)
+	}
+
+	m.vmActionCursor = vmActionChangeCPUs
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("opening CPU form should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeChangeVMCPUs || next.changeVMCPUs != "4" {
+		t.Fatalf("CPU action did not open form with current CPU count: %#v", next)
+	}
+	form := stripANSI(next.viewChangeVMCPUs(80, 16))
+	if !strings.Contains(form, "Current:    4") || !strings.Contains(form, "> CPUs:     4") {
+		t.Fatalf("CPU form missing current/default values:\n%s", form)
+	}
+
+	m.vmActionCursor = vmActionChangeMemory
+	updated, cmd = m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("opening RAM form should not start a command")
+	}
+	next = updated.(Model)
+	if next.mode != modeChangeVMMemory || next.changeVMMemory != "8192" {
+		t.Fatalf("RAM action did not open form with current RAM amount: %#v", next)
+	}
+	form = stripANSI(next.viewChangeVMMemory(80, 16))
+	if !strings.Contains(form, "Current:    8192 MB") || !strings.Contains(form, "> RAM MB:   8192") {
+		t.Fatalf("RAM form missing current/default values:\n%s", form)
+	}
+}
+
+func TestVMSummaryDisplaysMemoryInMB(t *testing.T) {
+	m := Model{
+		config: Config{Theme: "Classic"},
+		vmDetail: VMDetail{
+			VM:     VM{Name: "source-vm"},
+			CPUs:   "4",
+			Memory: "8388608 KiB",
+		},
+	}
+	view := stripANSI(m.viewVMSummary(80, 16))
+	if !strings.Contains(view, "Memory:     8192 MB") || strings.Contains(view, "8388608 KiB") {
+		t.Fatalf("summary should show RAM in MB, got:\n%s", view)
+	}
+}
+
+func TestVMResourceChangeScriptsParse(t *testing.T) {
+	for name, script := range map[string]string{
+		"cpus":   changeVMCPUsScript("source-vm", 6),
+		"memory": changeVMMemoryScript("source-vm", 8192),
+	} {
+		path := t.TempDir() + "/" + name + ".sh"
+		if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+			t.Fatalf("write %s script: %v", name, err)
+		}
+		if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("%s script failed bash -n: %v\n%s\n%s", name, err, out, script)
+		}
+		if !strings.Contains(script, "dumpxml --inactive") || !strings.Contains(script, "define \"$tmp\"") {
+			t.Fatalf("%s script should update persistent libvirt XML:\n%s", name, script)
+		}
 	}
 }
 

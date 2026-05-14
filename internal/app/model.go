@@ -98,6 +98,8 @@ const (
 	modeAddNIC
 	modeDuplicateVM
 	modeRenameVM
+	modeChangeVMCPUs
+	modeChangeVMMemory
 	modeHostSetupPrompt
 	modeDeleteHostConfirm
 	modeTheme
@@ -125,6 +127,8 @@ const (
 	vmActionForceOff
 	vmActionOpenConsole
 	vmActionStopConsole
+	vmActionChangeCPUs
+	vmActionChangeMemory
 	vmActionRepairTablet
 	vmActionAdopt
 	vmActionToggleShared
@@ -249,6 +253,8 @@ type Model struct {
 
 	duplicateVMName string
 	renameVMName    string
+	changeVMCPUs    string
+	changeVMMemory  string
 }
 
 type vmAction struct {
@@ -500,6 +506,10 @@ func (m Model) View() string {
 		b.WriteString(m.viewDuplicateVM(innerW, contentH))
 	case modeRenameVM:
 		b.WriteString(m.viewRenameVM(innerW, contentH))
+	case modeChangeVMCPUs:
+		b.WriteString(m.viewChangeVMCPUs(innerW, contentH))
+	case modeChangeVMMemory:
+		b.WriteString(m.viewChangeVMMemory(innerW, contentH))
 	case modeHostSetupPrompt:
 		b.WriteString(m.viewHostSetupPrompt(innerW, contentH))
 	case modeDeleteHostConfirm:
@@ -526,14 +536,14 @@ func (m Model) View() string {
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeAddMapping && m.mode != modeImportVBox) {
+	if msg.String() == "ctrl+c" || (msg.String() == "q" && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeChangeVMCPUs && m.mode != modeChangeVMMemory && m.mode != modeAddMapping && m.mode != modeImportVBox) {
 		return m, tea.Quit
 	}
 	if msg.String() == "?" {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeImportSourcePicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeImportSourcePicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeChangeVMCPUs && m.mode != modeChangeVMMemory && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -569,6 +579,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDuplicateVMKey(msg)
 	case modeRenameVM:
 		return m.updateRenameVMKey(msg)
+	case modeChangeVMCPUs:
+		return m.updateChangeVMCPUsKey(msg)
+	case modeChangeVMMemory:
+		return m.updateChangeVMMemoryKey(msg)
 	case modeHostSetupPrompt:
 		return m.updateHostSetupPromptKey(msg)
 	case modeDeleteHostConfirm:
@@ -1343,6 +1357,8 @@ func (m Model) vmActions() []vmAction {
 		{id: vmActionForceOff, group: "Power", label: "Force off"},
 		{id: vmActionOpenConsole, group: "Console", label: "Open browser console"},
 		{id: vmActionStopConsole, group: "Console", label: "Stop console tunnel"},
+		{id: vmActionChangeCPUs, group: "Resources", label: "Change CPUs (current: " + valueOr(m.vmDetail.CPUs, "unknown") + ")"},
+		{id: vmActionChangeMemory, group: "Resources", label: "Change RAM (current: " + formatMemoryMiB(m.vmDetail.Memory) + ")"},
 		{id: vmActionRepairTablet, group: "Repair", label: "Add USB tablet input"},
 		{id: vmActionAdopt, group: "Ownership", label: "Adopt unmanaged VM"},
 		{id: vmActionToggleShared, group: "Ownership", label: shareLabel},
@@ -1455,6 +1471,18 @@ func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
 			out, err := setOwnership(m.activeHost, vm, !vm.Shared, true)
 			return resultMsg{op: "share", output: out, err: err}
 		})
+	case vmActionChangeCPUs:
+		m.mode = modeChangeVMCPUs
+		m.changeVMCPUs = currentCPUsValue(m.vmDetail.CPUs)
+		m.status = "Enter the CPU count for " + m.vmDetail.VM.Name + "."
+		m.errText = ""
+		return m, nil
+	case vmActionChangeMemory:
+		m.mode = modeChangeVMMemory
+		m.changeVMMemory = currentMemoryMiBValue(m.vmDetail.Memory)
+		m.status = "Enter RAM in MB for " + m.vmDetail.VM.Name + "."
+		m.errText = ""
+		return m, nil
 	case vmActionRename:
 		m.mode = modeRenameVM
 		m.renameVMName = m.vmDetail.VM.Name
@@ -1677,6 +1705,60 @@ func (m Model) updateDuplicateVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if msg.Type == tea.KeyRunes {
 			m.duplicateVMName = appendLimitedRunes(m.duplicateVMName, msg.String(), maxVMNameRunes)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateChangeVMCPUsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled CPU change."
+		m.errText = ""
+	case "enter":
+		cpus, err := m.pendingVMCPUs()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, fmt.Sprintf("Changing %s to %d CPU(s)...", vm.Name, cpus), "vm-cpus", func() resultMsg {
+			out, err := changeVMCPUs(m.activeHost, vm.Name, cpus)
+			return resultMsg{op: "vm-cpus", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		m.changeVMCPUs = trimLastRune(m.changeVMCPUs)
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.changeVMCPUs = appendDigits(m.changeVMCPUs, msg.String(), 3)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateChangeVMMemoryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeVMDetail
+		m.status = "Cancelled RAM change."
+		m.errText = ""
+	case "enter":
+		memoryMiB, err := m.pendingVMMemoryMiB()
+		if err != nil {
+			m.errText = err.Error()
+			return m, nil
+		}
+		vm := m.vmDetail.VM
+		return m.busy(modeVMDetail, fmt.Sprintf("Changing %s to %d MB RAM...", vm.Name, memoryMiB), "vm-memory", func() resultMsg {
+			out, err := changeVMMemory(m.activeHost, vm.Name, memoryMiB)
+			return resultMsg{op: "vm-memory", output: out, err: err}
+		})
+	case "backspace", "ctrl+h":
+		m.changeVMMemory = trimLastRune(m.changeVMMemory)
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.changeVMMemory = appendDigits(m.changeVMMemory, msg.String(), 7)
 		}
 	}
 	return m, nil
@@ -2178,7 +2260,7 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 		}
 		m.hostTab = hostTabVMs
 		return m.loadVMs(m.activeHost)
-	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach", "tablet-repair":
+	case "disk-create", "disk-import", "disk-detach", "disk-boot", "nic-add", "nic-detach", "tablet-repair", "vm-cpus", "vm-memory":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
 			m.status = msg.op + " complete."
@@ -2245,6 +2327,10 @@ func failureText(msg resultMsg, m Model) string {
 		return "NIC detach failed: " + msg.err.Error()
 	case "tablet-repair":
 		return "USB tablet repair failed: " + msg.err.Error()
+	case "vm-cpus":
+		return "CPU change failed: " + msg.err.Error()
+	case "vm-memory":
+		return "RAM change failed: " + msg.err.Error()
 	default:
 		return msg.op + " failed: " + msg.err.Error()
 	}
@@ -2553,6 +2639,22 @@ func (m Model) pendingRenameVMName() (string, error) {
 		return "", fmt.Errorf("new VM name must be different from the current VM name")
 	}
 	return name, nil
+}
+
+func (m Model) pendingVMCPUs() (int, error) {
+	cpus, err := strconv.Atoi(strings.TrimSpace(m.changeVMCPUs))
+	if err != nil || cpus < 1 || cpus > 256 {
+		return 0, fmt.Errorf("CPUs must be 1-256")
+	}
+	return cpus, nil
+}
+
+func (m Model) pendingVMMemoryMiB() (int, error) {
+	memoryMiB, err := strconv.Atoi(strings.TrimSpace(m.changeVMMemory))
+	if err != nil || memoryMiB < 128 || memoryMiB > 1048576 {
+		return 0, fmt.Errorf("RAM must be 128-1048576 MB")
+	}
+	return memoryMiB, nil
 }
 
 func validateVMName(name, label string) error {
@@ -2918,7 +3020,7 @@ func (m Model) viewVMSummary(width, height int) string {
 		"",
 		"Runtime",
 		"  CPUs:       " + valueOr(m.vmDetail.CPUs, "unknown"),
-		"  Memory:     " + valueOr(m.vmDetail.Memory, "unknown"),
+		"  Memory:     " + formatMemoryMiB(m.vmDetail.Memory),
 		"  Autostart:  " + valueOr(m.vmDetail.Autostart, "unknown"),
 		"  Graphics:   " + valueOr(m.vmDetail.Graphics, "none"),
 		"",
@@ -2979,28 +3081,52 @@ func (m Model) viewVMNICs(width, height int) string {
 
 func (m Model) viewVMActions(width, height int) string {
 	actions := m.vmActions()
-	lines := make([]string, 0, len(actions)*2)
+	type actionLine struct {
+		text     string
+		selected bool
+	}
+	lines := make([]actionLine, 0, len(actions)*2)
 	s := m.styles()
 	currentGroup := ""
+	selectedLine := 0
 	for i, action := range actions {
 		if action.group != currentGroup {
 			if len(lines) > 0 {
-				lines = append(lines, "")
+				lines = append(lines, actionLine{})
 			}
-			lines = append(lines, action.group)
+			lines = append(lines, actionLine{text: action.group})
 			currentGroup = action.group
 		}
 		prefix := "  "
+		selected := i == m.vmActionCursor
 		if i == m.vmActionCursor {
 			prefix = "> "
 		}
-		line := clipText(prefix+action.label, width)
-		if i == m.vmActionCursor {
-			line = s.selected.Render(line)
+		line := actionLine{text: clipText(prefix+action.label, width), selected: selected}
+		if selected {
+			selectedLine = len(lines)
 		}
 		lines = append(lines, line)
 	}
-	return fitLines(strings.Join(lines, "\n"), width, height)
+	if height > 0 && len(lines) > height {
+		start := 0
+		if selectedLine >= height {
+			start = selectedLine - height + 1
+		}
+		if start+height > len(lines) {
+			start = len(lines) - height
+		}
+		lines = lines[start : start+height]
+	}
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text := clipText(line.text, width)
+		if line.selected {
+			text = s.selected.Render(text)
+		}
+		rendered = append(rendered, text)
+	}
+	return strings.Join(rendered, "\n")
 }
 
 func (m Model) viewHostConfig(width, height int) string {
@@ -3255,6 +3381,25 @@ func (m Model) viewRenameVM(width, height int) string {
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
+func (m Model) viewChangeVMCPUs(width, height int) string {
+	valueW := max(8, width-20)
+	current := valueOr(m.vmDetail.CPUs, "unknown")
+	body := fmt.Sprintf("Change CPUs\n\nVM:         %s\nCurrent:    %s\n> CPUs:     %s\n\nUpdates the persistent libvirt VM definition.\nRunning VMs need a restart before the new CPU count is used.\nEnter saves. Esc cancels.",
+		m.vmDetail.VM.Name,
+		current,
+		clipTextTail(m.changeVMCPUs, valueW))
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
+func (m Model) viewChangeVMMemory(width, height int) string {
+	valueW := max(8, width-20)
+	body := fmt.Sprintf("Change RAM\n\nVM:         %s\nCurrent:    %s\n> RAM MB:   %s\n\nUpdates the persistent libvirt VM definition.\nRunning VMs need a restart before the new RAM amount is used.\nEnter saves. Esc cancels.",
+		m.vmDetail.VM.Name,
+		formatMemoryMiB(m.vmDetail.Memory),
+		clipTextTail(m.changeVMMemory, valueW))
+	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) viewThemes(width, height int) string {
 	var b strings.Builder
 	s := m.styles()
@@ -3350,6 +3495,10 @@ func (m Model) helpText() string {
 			return "type name  enter: duplicate  esc: cancel"
 		case modeRenameVM:
 			return "type name  enter: rename  esc: cancel"
+		case modeChangeVMCPUs:
+			return "type CPU count  enter: save  esc: cancel"
+		case modeChangeVMMemory:
+			return "type RAM in MB  enter: save  esc: cancel"
 		case modeHostSetupPrompt:
 			return "enter/y: run setup  n/esc: skip  q: quit"
 		case modeDeleteHostConfirm:
@@ -3471,6 +3620,58 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func formatMemoryMiB(value string) string {
+	mib, ok := parseMemoryMiB(value)
+	if !ok {
+		return valueOr(value, "unknown")
+	}
+	return fmt.Sprintf("%d MB", mib)
+}
+
+func currentMemoryMiBValue(value string) string {
+	mib, ok := parseMemoryMiB(value)
+	if !ok {
+		return ""
+	}
+	return strconv.Itoa(mib)
+}
+
+func parseMemoryMiB(value string) (int, bool) {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	amount, err := strconv.Atoi(fields[0])
+	if err != nil || amount <= 0 {
+		return 0, false
+	}
+	unit := "mib"
+	if len(fields) > 1 {
+		unit = strings.ToLower(fields[1])
+	}
+	switch unit {
+	case "kib", "kb":
+		return amount / 1024, true
+	case "mib", "mb":
+		return amount, true
+	case "gib", "gb":
+		return amount * 1024, true
+	default:
+		return 0, false
+	}
+}
+
+func currentCPUsValue(value string) string {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) == 0 {
+		return ""
+	}
+	if _, err := strconv.Atoi(fields[0]); err != nil {
+		return ""
+	}
+	return fields[0]
 }
 
 func sharedChoiceLabel(value string) string {
@@ -3859,6 +4060,19 @@ func appendLimitedRunes(existing, addition string, limit int) string {
 		runes = runes[:remaining]
 	}
 	return existing + string(runes)
+}
+
+func appendDigits(existing, addition string, limit int) string {
+	if limit <= 0 || len([]rune(existing)) >= limit {
+		return existing
+	}
+	var b strings.Builder
+	for _, r := range addition {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return appendLimitedRunes(existing, b.String(), limit)
 }
 
 func suggestedDuplicateName(name string) string {
@@ -5433,6 +5647,129 @@ func renameVM(h Host, sourceName, newName string) (string, error) {
 	}
 	script := renameVMScript(sourceName, newName)
 	return ssh(h.Target, script, 45*time.Second)
+}
+
+func changeVMCPUs(h Host, vmName string, cpus int) (string, error) {
+	if vmName == "" {
+		return "", fmt.Errorf("VM name is missing")
+	}
+	if cpus < 1 || cpus > 256 {
+		return "", fmt.Errorf("CPUs must be 1-256")
+	}
+	return ssh(h.Target, changeVMCPUsScript(vmName, cpus), 45*time.Second)
+}
+
+func changeVMCPUsScript(vmName string, cpus int) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+cpus=%d
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to update VM CPU count." >&2; exit 1; }
+virsh -c qemu:///system dominfo "$vm" >/dev/null 2>&1 || { echo "VM not found: $vm" >&2; exit 1; }
+tmp="$(mktemp)"
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT
+if ! virsh -c qemu:///system dumpxml --inactive "$vm" >"$tmp" 2>/dev/null; then
+  virsh -c qemu:///system dumpxml "$vm" >"$tmp"
+fi
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null || true)"
+python3 - "$tmp" "$cpus" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path, cpus = sys.argv[1], sys.argv[2]
+tree = ET.parse(path)
+root = tree.getroot()
+
+vcpu = root.find("vcpu")
+if vcpu is None:
+    vcpu = ET.Element("vcpu", {"placement": "static"})
+    insert_at = 0
+    for index, child in enumerate(list(root)):
+        if child.tag in ("name", "uuid", "metadata", "memory", "currentMemory"):
+            insert_at = index + 1
+    root.insert(insert_at, vcpu)
+vcpu.attrib.pop("current", None)
+vcpu.text = cpus
+
+cpu_el = root.find("cpu")
+if cpu_el is not None:
+    for topology in list(cpu_el.findall("topology")):
+        cpu_el.remove(topology)
+
+tree.write(path, encoding="unicode")
+PY
+virsh -c qemu:///system define "$tmp" >/dev/null
+echo "Set ${vm} to ${cpus} CPU(s)."
+case "$state" in
+  running*|paused*|pmsuspended*) echo "Restart the VM for the new CPU count to take effect." ;;
+esac
+`, shellQuote(vmName), cpus)
+}
+
+func changeVMMemory(h Host, vmName string, memoryMiB int) (string, error) {
+	if vmName == "" {
+		return "", fmt.Errorf("VM name is missing")
+	}
+	if memoryMiB < 128 || memoryMiB > 1048576 {
+		return "", fmt.Errorf("RAM must be 128-1048576 MB")
+	}
+	return ssh(h.Target, changeVMMemoryScript(vmName, memoryMiB), 45*time.Second)
+}
+
+func changeVMMemoryScript(vmName string, memoryMiB int) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+memory_mib=%d
+memory_kib=$((memory_mib * 1024))
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required on the host to update VM RAM." >&2; exit 1; }
+virsh -c qemu:///system dominfo "$vm" >/dev/null 2>&1 || { echo "VM not found: $vm" >&2; exit 1; }
+tmp="$(mktemp)"
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT
+if ! virsh -c qemu:///system dumpxml --inactive "$vm" >"$tmp" 2>/dev/null; then
+  virsh -c qemu:///system dumpxml "$vm" >"$tmp"
+fi
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null || true)"
+python3 - "$tmp" "$memory_kib" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path, memory_kib = sys.argv[1], sys.argv[2]
+tree = ET.parse(path)
+root = tree.getroot()
+
+def place_after_identity(el):
+    insert_at = 0
+    for index, child in enumerate(list(root)):
+        if child.tag in ("name", "uuid", "metadata"):
+            insert_at = index + 1
+    root.insert(insert_at, el)
+
+memory = root.find("memory")
+if memory is None:
+    memory = ET.Element("memory")
+    place_after_identity(memory)
+memory.set("unit", "KiB")
+memory.text = memory_kib
+
+current = root.find("currentMemory")
+if current is None:
+    current = ET.Element("currentMemory")
+    memory_index = list(root).index(memory)
+    root.insert(memory_index + 1, current)
+current.set("unit", "KiB")
+current.text = memory_kib
+
+tree.write(path, encoding="unicode")
+PY
+virsh -c qemu:///system define "$tmp" >/dev/null
+echo "Set ${vm} RAM to ${memory_mib} MB."
+case "$state" in
+  running*|paused*|pmsuspended*) echo "Restart the VM for the new RAM amount to take effect." ;;
+esac
+`, shellQuote(vmName), memoryMiB)
 }
 
 func renameVMScript(sourceName, newName string) string {
