@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.50 - 2026-05-14
+
+- Added a VM detail Actions tab delete flow for powered-off VMs. The action opens a confirmation screen, undefines the libvirt domain, removes VMRelay ownership metadata, and leaves disk image files untouched.
+
 ## 0.2.49 - 2026-05-14
 
 - Made the VM detail Actions tab scroll around the selected action when the action list is taller than the visible pane.

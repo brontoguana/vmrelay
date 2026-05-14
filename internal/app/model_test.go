@@ -892,6 +892,69 @@ func TestVMActionsExposeRenameFlow(t *testing.T) {
 	}
 }
 
+func TestVMActionsExposeDeleteFlow(t *testing.T) {
+	m := Model{
+		config:         Config{Theme: "Classic"},
+		mode:           modeVMDetail,
+		activeHost:     Host{Name: "iron"},
+		vmTab:          vmTabActions,
+		vmActionCursor: vmActionDelete,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", UUID: "1234", State: "shut off"},
+		},
+	}
+	view := stripANSI(m.viewVMDetail(100, 28))
+	if !strings.Contains(view, "Delete") || !strings.Contains(view, "Delete VM") {
+		t.Fatalf("actions tab should expose delete action:\n%s", view)
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("opening delete confirmation should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeDeleteVMConfirm {
+		t.Fatalf("delete action did not open confirmation: %#v", next)
+	}
+	confirm := stripANSI(next.viewDeleteVMConfirm(80, 16))
+	for _, want := range []string{"Delete VM?", "VM:     source-vm", "Disk image files are not deleted"} {
+		if !strings.Contains(confirm, want) {
+			t.Fatalf("delete confirmation missing %q:\n%s", want, confirm)
+		}
+	}
+	if help := next.helpText(); !strings.Contains(help, "enter/y: delete VM") || !strings.Contains(help, "n/esc: cancel") {
+		t.Fatalf("delete confirmation footer is wrong: %q", help)
+	}
+	updated, cmd = next.updateDeleteVMConfirmKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("cancelling delete confirmation should not start a command")
+	}
+	next = updated.(Model)
+	if next.mode != modeVMDetail || !strings.Contains(next.status, "Cancelled") {
+		t.Fatalf("cancel should return to VM detail: %#v", next)
+	}
+}
+
+func TestVMActionsDeleteRequiresPoweredOffVM(t *testing.T) {
+	m := Model{
+		config:         Config{Theme: "Classic"},
+		mode:           modeVMDetail,
+		activeHost:     Host{Name: "iron"},
+		vmTab:          vmTabActions,
+		vmActionCursor: vmActionDelete,
+		vmDetail: VMDetail{
+			VM: VM{Name: "source-vm", State: "running"},
+		},
+	}
+	updated, cmd := m.updateVMDetailKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("delete action for running VM should not start a command")
+	}
+	next := updated.(Model)
+	if next.mode != modeVMDetail || !strings.Contains(next.errText, "Power off source-vm before deleting it") {
+		t.Fatalf("running delete should stay in detail with an error: %#v", next)
+	}
+}
+
 func TestVMActionsExposeUSBTabletRepair(t *testing.T) {
 	m := Model{
 		config:     Config{Theme: "Classic"},
@@ -1123,6 +1186,30 @@ func TestRenameVMScriptUsesInactiveDomrename(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("rename script missing %q:\n%s", want, script)
 		}
+	}
+}
+
+func TestDeleteVMScriptRequiresInactiveUndefineOnly(t *testing.T) {
+	script := deleteVMScript(VM{Name: "source-vm", UUID: "1234"})
+	path := t.TempDir() + "/delete.sh"
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatalf("write delete script: %v", err)
+	}
+	if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+		t.Fatalf("delete script failed bash -n: %v\n%s\n%s", err, out, script)
+	}
+	for _, want := range []string{
+		"Power off ${vm} before deleting it",
+		"undefine \"$vm\" --managed-save --snapshots-metadata --nvram",
+		"remove_policy_entry /var/lib/vmrelay/ownership.tsv",
+		"Disk image files were not deleted.",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("delete script missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "vol-delete") || strings.Contains(script, "--remove-all-storage") {
+		t.Fatalf("delete script should not delete VM disks:\n%s", script)
 	}
 }
 

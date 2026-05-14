@@ -98,6 +98,7 @@ const (
 	modeAddNIC
 	modeDuplicateVM
 	modeRenameVM
+	modeDeleteVMConfirm
 	modeChangeVMCPUs
 	modeChangeVMMemory
 	modeHostSetupPrompt
@@ -133,6 +134,7 @@ const (
 	vmActionAdopt
 	vmActionToggleShared
 	vmActionRename
+	vmActionDelete
 	vmActionDuplicate
 	vmActionRefresh
 )
@@ -506,6 +508,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewDuplicateVM(innerW, contentH))
 	case modeRenameVM:
 		b.WriteString(m.viewRenameVM(innerW, contentH))
+	case modeDeleteVMConfirm:
+		b.WriteString(m.viewDeleteVMConfirm(innerW, contentH))
 	case modeChangeVMCPUs:
 		b.WriteString(m.viewChangeVMCPUs(innerW, contentH))
 	case modeChangeVMMemory:
@@ -543,7 +547,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 		return m, nil
 	}
-	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeImportSourcePicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeChangeVMCPUs && m.mode != modeChangeVMMemory && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
+	if msg.String() == "m" && m.mode != modeAddHost && m.mode != modeAddMapping && m.mode != modeCreateVM && m.mode != modeImportVBox && m.mode != modeISOPicker && m.mode != modeImportSourcePicker && m.mode != modeAddDisk && m.mode != modeImportDisk && m.mode != modeAddNIC && m.mode != modeDuplicateVM && m.mode != modeRenameVM && m.mode != modeDeleteVMConfirm && m.mode != modeChangeVMCPUs && m.mode != modeChangeVMMemory && m.mode != modeHostSetupPrompt && m.mode != modeDeleteHostConfirm && m.mode != modeBusy && m.mode != modeTheme {
 		m.themeBack = m.mode
 		m.themeCursor = max(0, themeIndex(m.config.Theme))
 		m.mode = modeTheme
@@ -579,6 +583,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDuplicateVMKey(msg)
 	case modeRenameVM:
 		return m.updateRenameVMKey(msg)
+	case modeDeleteVMConfirm:
+		return m.updateDeleteVMConfirmKey(msg)
 	case modeChangeVMCPUs:
 		return m.updateChangeVMCPUsKey(msg)
 	case modeChangeVMMemory:
@@ -1363,6 +1369,7 @@ func (m Model) vmActions() []vmAction {
 		{id: vmActionAdopt, group: "Ownership", label: "Adopt unmanaged VM"},
 		{id: vmActionToggleShared, group: "Ownership", label: shareLabel},
 		{id: vmActionRename, group: "Rename", label: "Rename VM"},
+		{id: vmActionDelete, group: "Delete", label: "Delete VM"},
 		{id: vmActionDuplicate, group: "Duplicate", label: "Duplicate to new VM name"},
 		{id: vmActionRefresh, group: "Refresh", label: "Reload detail"},
 	}
@@ -1487,6 +1494,15 @@ func (m Model) runVMAction(actionID int) (tea.Model, tea.Cmd) {
 		m.mode = modeRenameVM
 		m.renameVMName = m.vmDetail.VM.Name
 		m.status = "Enter the new VM name."
+		m.errText = ""
+		return m, nil
+	case vmActionDelete:
+		if !isShutOffState(m.vmDetail.VM.State) {
+			m.errText = "Power off " + m.vmDetail.VM.Name + " before deleting it."
+			return m, nil
+		}
+		m.mode = modeDeleteVMConfirm
+		m.status = "Confirm VM deletion."
 		m.errText = ""
 		return m, nil
 	case vmActionDuplicate:
@@ -1679,6 +1695,27 @@ func (m Model) updateRenameVMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes {
 			m.renameVMName = appendLimitedRunes(m.renameVMName, msg.String(), maxVMNameRunes)
 		}
+	}
+	return m, nil
+}
+
+func (m Model) updateDeleteVMConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n", "N":
+		m.mode = modeVMDetail
+		m.status = "Cancelled VM delete."
+		m.errText = ""
+	case "enter", "y", "Y":
+		vm := m.vmDetail.VM
+		if !isShutOffState(vm.State) {
+			m.mode = modeVMDetail
+			m.errText = "Power off " + vm.Name + " before deleting it."
+			return m, nil
+		}
+		return m.busy(modeVMDetail, "Deleting "+vm.Name+"...", "vm-delete", func() resultMsg {
+			out, err := deleteVM(m.activeHost, vm)
+			return resultMsg{op: "vm-delete", output: out, vm: vm, err: err}
+		})
 	}
 	return m, nil
 }
@@ -2246,6 +2283,13 @@ func (m Model) updateResult(msg resultMsg) (tea.Model, tea.Cmd) {
 			renamed.Name = msg.detail.VM.Name
 		}
 		return m.loadVMDetailWithStatus(m.activeHost, renamed, actionStatus)
+	case "vm-delete":
+		actionStatus := strings.TrimSpace(msg.output)
+		if actionStatus == "" {
+			actionStatus = "VM deleted."
+		}
+		m.hostTab = hostTabVMs
+		return m.loadVMsWithStatus(m.activeHost, actionStatus)
 	case "vm-create":
 		m.status = strings.TrimSpace(msg.output)
 		if m.status == "" {
@@ -2313,6 +2357,8 @@ func failureText(msg resultMsg, m Model) string {
 		return "VM duplicate failed: " + msg.err.Error()
 	case "vm-rename":
 		return "VM rename failed: " + msg.err.Error()
+	case "vm-delete":
+		return "VM delete failed: " + msg.err.Error()
 	case "disk-create":
 		return "Disk creation failed: " + msg.err.Error()
 	case "disk-import":
@@ -3381,6 +3427,15 @@ func (m Model) viewRenameVM(width, height int) string {
 	return m.styles().pane.Width(max(50, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
 }
 
+func (m Model) viewDeleteVMConfirm(width, height int) string {
+	vm := m.vmDetail.VM
+	body := fmt.Sprintf("Delete VM?\n\nVM:     %s\nState:  %s\nUUID:   %s\n\nThis undefines the libvirt VM and removes its VMRelay ownership entry.\nDisk image files are not deleted.\n\nEnter/y deletes the powered-off VM.\nN or Esc cancels.",
+		vm.Name,
+		valueOr(vm.State, "unknown"),
+		valueOr(vm.UUID, "unknown"))
+	return m.styles().pane.Width(max(56, width-4)).Height(max(3, height-2)).Render(fitLines(body, width-6, height-4))
+}
+
 func (m Model) viewChangeVMCPUs(width, height int) string {
 	valueW := max(8, width-20)
 	current := valueOr(m.vmDetail.CPUs, "unknown")
@@ -3495,6 +3550,8 @@ func (m Model) helpText() string {
 			return "type name  enter: duplicate  esc: cancel"
 		case modeRenameVM:
 			return "type name  enter: rename  esc: cancel"
+		case modeDeleteVMConfirm:
+			return "enter/y: delete VM  n/esc: cancel  q: quit"
 		case modeChangeVMCPUs:
 			return "type CPU count  enter: save  esc: cancel"
 		case modeChangeVMMemory:
@@ -3548,6 +3605,10 @@ func normalizeVMState(state string) string {
 
 func isRunningState(state string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(state)), "running")
+}
+
+func isShutOffState(state string) bool {
+	return vmStateCategory(state) == "off"
 }
 
 func (m Model) shutdownPending(vm VM) bool {
@@ -5649,6 +5710,13 @@ func renameVM(h Host, sourceName, newName string) (string, error) {
 	return ssh(h.Target, script, 45*time.Second)
 }
 
+func deleteVM(h Host, vm VM) (string, error) {
+	if vm.Name == "" {
+		return "", fmt.Errorf("VM name is missing")
+	}
+	return ssh(h.Target, deleteVMScript(vm), 45*time.Second)
+}
+
 func changeVMCPUs(h Host, vmName string, cpus int) (string, error) {
 	if vmName == "" {
 		return "", fmt.Errorf("VM name is missing")
@@ -5790,6 +5858,69 @@ virsh -c qemu:///system domrename "$source" "$name" >/dev/null
 echo "Renamed ${source} to ${name}."
 echo "VMRelay ownership is preserved because the VM UUID is unchanged."
 `, shellQuote(sourceName), shellQuote(newName))
+}
+
+func deleteVMScript(vm VM) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+vm=%s
+uuid=%s
+virsh -c qemu:///system dominfo "$vm" >/dev/null 2>&1 || { echo "VM not found: $vm" >&2; exit 1; }
+if [ -z "$uuid" ]; then
+  uuid="$(virsh -c qemu:///system domuuid "$vm" 2>/dev/null || true)"
+fi
+state="$(virsh -c qemu:///system domstate "$vm" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+case "$state" in
+  "shut off"*) ;;
+  "") echo "VM not found: $vm" >&2; exit 1 ;;
+  *) echo "Power off ${vm} before deleting it. Current state: ${state}." >&2; exit 1 ;;
+esac
+
+err_file="$(mktemp)"
+cleanup() { rm -f "$err_file"; }
+trap cleanup EXIT
+if virsh -c qemu:///system undefine "$vm" --managed-save --snapshots-metadata --nvram >/dev/null 2>"$err_file"; then
+  :
+elif virsh -c qemu:///system undefine "$vm" --managed-save --snapshots-metadata >/dev/null 2>"$err_file"; then
+  :
+elif virsh -c qemu:///system undefine "$vm" >/dev/null 2>"$err_file"; then
+  :
+else
+  cat "$err_file" >&2
+  exit 1
+fi
+
+remove_policy_entry() {
+  policy="$1"
+  [ -n "$uuid" ] || return 0
+  [ -e "$policy" ] || return 0
+  use_sudo=0
+  if [ -w "$policy" ]; then
+    :
+  elif sudo -n true 2>/dev/null; then
+    use_sudo=1
+  else
+    return 0
+  fi
+  tmp="$(mktemp)"
+  if [ "$use_sudo" = "1" ]; then
+    sudo -n awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp" || { rm -f "$tmp"; return 0; }
+    sudo -n cp "$tmp" "$policy" || { rm -f "$tmp"; return 0; }
+    sudo -n chmod 0664 "$policy" 2>/dev/null || true
+  else
+    awk -F '\t' -v id="$uuid" '$1 != id { print }' "$policy" >"$tmp" || { rm -f "$tmp"; return 0; }
+    cat "$tmp" >"$policy" || { rm -f "$tmp"; return 0; }
+    chmod 0664 "$policy" 2>/dev/null || true
+  fi
+  rm -f "$tmp"
+}
+
+remove_policy_entry /var/lib/vmrelay/ownership.tsv
+remove_policy_entry "${XDG_DATA_HOME:-$HOME/.local/share}/vmrelay/ownership.tsv"
+
+echo "Deleted VM ${vm}."
+echo "Disk image files were not deleted."
+`, shellQuote(vm.Name), shellQuote(vm.UUID))
 }
 
 func detachDisk(h Host, vmName string, disk VMDisk) (string, error) {
