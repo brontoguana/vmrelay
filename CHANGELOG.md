@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added the VMRelay TUI screenshot to the top of the README.
+- Shortened and reorganized the README, removing the legacy script section.
+
 ## 0.2.48 - 2026-05-13
 
 - Fixed VM import still reporting `exit status 141` on hosts where `virsh net-info` or `virsh pool-info` trips `pipefail` after an early-exit parser. VM import and matching VM creation paths now capture command output before parsing network, pool, and disk-format details.
