@@ -358,6 +358,7 @@ func New(version string) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
+	resetConsoleErrorLog(stateDir)
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return Model{}, err
@@ -6136,7 +6137,11 @@ func openConsole(h Host, vmName, stateDir string) (string, error) {
 	}
 
 	ctl := consoleControlPath(stateDir, h.Name, vmName)
+	if err := os.MkdirAll(filepath.Dir(ctl), 0o700); err != nil {
+		return out, err
+	}
 	_ = os.Remove(ctl)
+	_ = os.Remove(legacyConsoleControlPath(stateDir, h.Name, vmName))
 	args := []string{
 		"-f", "-N", "-M", "-S", ctl,
 		"-o", "BatchMode=yes",
@@ -6146,6 +6151,23 @@ func openConsole(h Host, vmName, stateDir string) (string, error) {
 		h.Target,
 	}
 	if tunnelOut, err := runCommand(20*time.Second, "ssh", args...); err != nil {
+		_ = os.Remove(ctl)
+		appendConsoleErrorLog(stateDir, consoleTunnelError{
+			Time:       time.Now(),
+			Host:       h.Name,
+			Target:     h.Target,
+			VM:         vmName,
+			LocalPort:  localPort,
+			RemotePort: remotePort,
+			Control:    ctl,
+			Args:       args,
+			Err:        err,
+			Output:     tunnelOut,
+		})
+		detail := firstOutputLine(tunnelOut)
+		if detail != "" {
+			return out + tunnelOut, fmt.Errorf("failed to start SSH console tunnel: %w: %s", err, detail)
+		}
 		return out + tunnelOut, fmt.Errorf("failed to start SSH console tunnel: %w", err)
 	}
 	state := consoleState{Host: h.Name, Target: h.Target, VM: vmName, LocalPort: localPort, RemotePort: remotePort}
@@ -6325,6 +6347,8 @@ fi
 	out, err := ssh(h.Target, script, 15*time.Second)
 	lines = append(lines, strings.TrimSpace(out))
 	_ = os.Remove(ctl)
+	_ = os.Remove(legacyConsoleControlPath(stateDir, h.Name, vmName))
+	_ = os.Remove(filepath.Dir(ctl))
 	_ = os.Remove(consoleStatePath(stateDir, h.Name, vmName))
 	return strings.TrimSpace(strings.Join(lines, "\n")), err
 }
@@ -6589,11 +6613,19 @@ func readConsoleState(stateDir, host, vm string) (consoleState, error) {
 }
 
 func consoleControlPath(stateDir, host, vm string) string {
+	return filepath.Join(shortRuntimeDir(stateDir), "console-"+hash(host+"-"+vm)+".ctl")
+}
+
+func legacyConsoleControlPath(stateDir, host, vm string) string {
 	return filepath.Join(stateDir, "console-"+hash(host+"-"+vm)+".ctl")
 }
 
 func consoleStatePath(stateDir, host, vm string) string {
 	return filepath.Join(stateDir, "console-"+hash(host+"-"+vm)+".json")
+}
+
+func consoleErrorLogPath(stateDir string) string {
+	return filepath.Join(stateDir, "console-errors.log")
 }
 
 func mappingControlPath(stateDir, host, id string) string {
@@ -6606,6 +6638,112 @@ func mappingEndpointPath(stateDir, host, id string) string {
 
 func mappingRelayPort(host, id string) int {
 	return stablePort("mapping-relay:"+host+":"+id, mappingRelayPortBase, mappingRelayPortSpan)
+}
+
+func shortRuntimeDir(stateDir string) string {
+	base := "/tmp"
+	if runtime.GOOS == "windows" {
+		base = os.TempDir()
+	} else if info, err := os.Stat(base); err != nil || !info.IsDir() {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "vmrelay-"+hash(stateDir))
+}
+
+type consoleTunnelError struct {
+	Time       time.Time
+	Host       string
+	Target     string
+	VM         string
+	LocalPort  int
+	RemotePort int
+	Control    string
+	Args       []string
+	Err        error
+	Output     string
+}
+
+func resetConsoleErrorLog(stateDir string) {
+	if stateDir == "" {
+		return
+	}
+	_ = os.MkdirAll(stateDir, 0o755)
+	_ = os.WriteFile(consoleErrorLogPath(stateDir), nil, 0o600)
+	_ = os.Chmod(consoleErrorLogPath(stateDir), 0o600)
+}
+
+func appendConsoleErrorLog(stateDir string, entry consoleTunnelError) {
+	if stateDir == "" {
+		return
+	}
+	if entry.Time.IsZero() {
+		entry.Time = time.Now()
+	}
+	argsJSON, err := json.Marshal(entry.Args)
+	if err != nil {
+		argsJSON = []byte("[]")
+	}
+	var b strings.Builder
+	b.WriteString("time: ")
+	b.WriteString(entry.Time.UTC().Format(time.RFC3339))
+	b.WriteByte('\n')
+	b.WriteString("event: console_tunnel_start_failed\n")
+	b.WriteString("host: ")
+	b.WriteString(entry.Host)
+	b.WriteByte('\n')
+	b.WriteString("target: ")
+	b.WriteString(entry.Target)
+	b.WriteByte('\n')
+	b.WriteString("vm: ")
+	b.WriteString(entry.VM)
+	b.WriteByte('\n')
+	b.WriteString("local_port: ")
+	b.WriteString(strconv.Itoa(entry.LocalPort))
+	b.WriteByte('\n')
+	b.WriteString("remote_port: ")
+	b.WriteString(strconv.Itoa(entry.RemotePort))
+	b.WriteByte('\n')
+	b.WriteString("control_path: ")
+	b.WriteString(entry.Control)
+	b.WriteByte('\n')
+	b.WriteString("ssh_args_json: ")
+	b.Write(argsJSON)
+	b.WriteByte('\n')
+	if entry.Err != nil {
+		b.WriteString("error: ")
+		b.WriteString(entry.Err.Error())
+		b.WriteByte('\n')
+	}
+	if out := strings.TrimSpace(entry.Output); out != "" {
+		b.WriteString("ssh_output:\n")
+		b.WriteString(indentLogBlock(limitLogText(out, 32*1024)))
+		b.WriteByte('\n')
+	}
+	b.WriteString("---\n")
+
+	_ = os.MkdirAll(stateDir, 0o755)
+	f, err := os.OpenFile(consoleErrorLogPath(stateDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = f.Chmod(0o600)
+	_, _ = f.WriteString(b.String())
+}
+
+func limitLogText(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n[truncated]"
+}
+
+func indentLogBlock(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func writeMappingEndpointHost(stateDir, host, id, endpointHost string) {
@@ -6689,6 +6827,16 @@ func runCommandInput(timeout time.Duration, input, name string, args ...string) 
 		return string(out), fmt.Errorf("%s timed out", name)
 	}
 	return string(out), err
+}
+
+func firstOutputLine(out string) string {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func shellQuote(s string) string {

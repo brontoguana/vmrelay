@@ -1858,6 +1858,76 @@ func TestConsoleRemoteScriptRestartsStaleNoVNCProxy(t *testing.T) {
 	}
 }
 
+func TestConsoleControlPathUsesShortRuntimeDir(t *testing.T) {
+	stateDir := filepath.Join("/Users", strings.Repeat("longname", 16), "Library", "Application Support", "vmrelay")
+	got := consoleControlPath(stateDir, "zinc", "Windows-Server-2003-Setup")
+	if strings.Contains(got, stateDir) {
+		t.Fatalf("control path should not live under long state dir: %s", got)
+	}
+	if !strings.Contains(filepath.Base(got), "console-") {
+		t.Fatalf("control path should keep console prefix, got %s", got)
+	}
+	if len(got) >= 100 {
+		t.Fatalf("control path is too long for portable SSH mux sockets: len=%d path=%s", len(got), got)
+	}
+}
+
+func TestFirstOutputLine(t *testing.T) {
+	got := firstOutputLine("\n\n  muxserver_listen bind(): No such file or directory\nsecond\n")
+	if got != "muxserver_listen bind(): No such file or directory" {
+		t.Fatalf("unexpected first output line: %q", got)
+	}
+}
+
+func TestConsoleErrorLogResetsAndAppends(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(consoleErrorLogPath(stateDir), []byte("old failure\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resetConsoleErrorLog(stateDir)
+	data, err := os.ReadFile(consoleErrorLogPath(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "" {
+		t.Fatalf("console error log was not reset: %q", data)
+	}
+
+	appendConsoleErrorLog(stateDir, consoleTunnelError{
+		Host:       "zinc",
+		Target:     "simplehelp@zinc.simplehelp.io",
+		VM:         "Windows-Server-2003-Setup",
+		LocalPort:  6998,
+		RemotePort: 6080,
+		Control:    "/tmp/vmrelay-test/console.ctl",
+		Args:       []string{"-f", "-N", "-L", "127.0.0.1:6998:127.0.0.1:6080", "simplehelp@zinc.simplehelp.io"},
+		Err:        os.ErrPermission,
+		Output:     "muxserver_listen bind(): Permission denied\n",
+	})
+	data, err = os.ReadFile(consoleErrorLogPath(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{
+		"event: console_tunnel_start_failed",
+		"host: zinc",
+		"target: simplehelp@zinc.simplehelp.io",
+		"vm: Windows-Server-2003-Setup",
+		"local_port: 6998",
+		"remote_port: 6080",
+		"control_path: /tmp/vmrelay-test/console.ctl",
+		`ssh_args_json: ["-f","-N","-L","127.0.0.1:6998:127.0.0.1:6080","simplehelp@zinc.simplehelp.io"]`,
+		"error: permission denied",
+		"ssh_output:\n  muxserver_listen bind(): Permission denied",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("console error log missing %q:\n%s", want, log)
+		}
+	}
+}
+
 func TestPendingDiskImportValidation(t *testing.T) {
 	m := Model{
 		importDiskSource: "/home/alice/source.vmdk",

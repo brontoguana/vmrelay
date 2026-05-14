@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.51 - 2026-05-14
+
+- Changed noVNC console SSH tunnels to use a short runtime control-socket path, include the first SSH stderr line in tunnel startup errors, and append failed tunnel diagnostics to a per-run `console-errors.log` in the VMRelay state directory.
+
 ## 0.2.50 - 2026-05-14
 
 - Added a VM detail Actions tab delete flow for powered-off VMs. The action opens a confirmation screen, undefines the libvirt domain, removes VMRelay ownership metadata, and leaves disk image files untouched.

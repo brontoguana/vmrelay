@@ -11,7 +11,7 @@ import (
 	"github.com/brontoguana/vmrelay/internal/app"
 )
 
-var version = "0.2.50"
+var version = "0.2.51"
 
 func main() {
 	for _, arg := range os.Args[1:] {
